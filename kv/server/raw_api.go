@@ -17,23 +17,23 @@ func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kv
 		return nil, err
 	}
 
-	value, err := reader.GetCF(req.GetCf(), req.GetKey())
-
+	value, err := reader.GetCF(req.Cf, req.Key)
 	if err != nil {
 		return &kvrpcpb.RawGetResponse{
 			Error: err.Error(),
 		}, nil
 	}
 
-	if err != nil || value == nil {
-		return &kvrpcpb.RawGetResponse{
-			NotFound: true,
-		}, nil
+	resp := &kvrpcpb.RawGetResponse{
+		Value:    value,
+		NotFound: true,
 	}
 
-	return &kvrpcpb.RawGetResponse{
-		Value: value,
-	}, nil
+	if value == nil {
+		resp.NotFound = true
+	}
+
+	return resp, nil
 }
 
 // RawPut puts the target data into storage and returns the corresponding response
@@ -55,7 +55,7 @@ func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kv
 		}, nil
 	}
 
-	return nil, nil
+	return &kvrpcpb.RawPutResponse{}, nil
 }
 
 // RawDelete delete the target data from storage and returns the corresponding response
@@ -76,7 +76,7 @@ func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest
 		}, nil
 	}
 
-	return nil, nil
+	return &kvrpcpb.RawDeleteResponse{}, nil
 }
 
 // RawScan scan the data starting from the start key up to limit. and return the corresponding result
@@ -91,7 +91,7 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 	it := reader.IterCF(req.Cf)
 	var kvPairList []*kvrpcpb.KvPair
 
-	for it.Seek([]byte{}); it.Valid(); it.Next() {
+	for it.Seek(req.StartKey); it.Valid(); it.Next() {
 		key := it.Item().Key()
 		value, err := it.Item().Value()
 		if err != nil {
