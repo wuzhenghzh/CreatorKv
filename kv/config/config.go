@@ -77,7 +77,7 @@ func NewDefaultConfig() *Config {
 		SchedulerStoreHeartbeatTickInterval: 10 * time.Second,
 		RegionMaxSize:                       144 * MB,
 		RegionSplitSize:                     96 * MB,
-		DBPath:                              "D://temp//DB",
+		DBPath:                              "/tmp/badger",
 	}
 }
 
@@ -96,6 +96,6 @@ func NewTestConfig() *Config {
 		SchedulerStoreHeartbeatTickInterval: 500 * time.Millisecond,
 		RegionMaxSize:                       144 * MB,
 		RegionSplitSize:                     96 * MB,
-		DBPath:                              "D://temp//DB",
+		DBPath:                              "/tmp/badger",
 	}
 }

@@ -1,7 +1,6 @@
 package engine_util
 
 import (
-	"github.com/pingcap/errors"
 	"os"
 
 	"github.com/Connor1996/badger"
@@ -40,10 +39,10 @@ func (en *Engines) WriteRaft(wb *WriteBatch) error {
 
 func (en *Engines) Close() error {
 	if err := en.Kv.Close(); err != nil {
-		return errors.Trace(err)
+		return err
 	}
 	if err := en.Raft.Close(); err != nil {
-		return errors.Trace(err)
+		return err
 	}
 	return nil
 }

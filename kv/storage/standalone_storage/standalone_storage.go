@@ -73,7 +73,6 @@ func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) 
 			}
 			return nil
 		})
-		println("key is : % s, values is : %s", modify.Key(), modify.Value())
 		if err != nil {
 			return err
 		}

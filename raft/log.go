@@ -89,3 +89,8 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	return 0, nil
 }
+
+// LastTerm return the last term of the log entries
+func (l *RaftLog) LastTerm() uint64 {
+	return 0
+}
