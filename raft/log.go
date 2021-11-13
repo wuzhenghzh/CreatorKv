@@ -92,7 +92,11 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	beginIndex := l.stabled - l.firstLogIndex + 1
+	if beginIndex <= uint64(len(l.entries)) {
+		return l.entries[beginIndex:]
+	}
+	return []pb.Entry{}
 }
 
 func (l *RaftLog) getEntriesFromIndex(index uint64) []*pb.Entry {

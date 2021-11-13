@@ -135,6 +135,8 @@ type Raft struct {
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
+	// rand et timeout, in the interval of [electionTimeout, electionTimeout + rand(electionTimeout)]
+	randomElectionTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -164,6 +166,7 @@ func newRaft(c *Config) *Raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
+
 	// Your Code Here (2A).
 	hardState, confState, _ := c.Storage.InitialState()
 	raft := &Raft{
@@ -171,7 +174,7 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
 		Term:             hardState.Term,
-		Vote:             hardState.GetVote(),
+		Vote:             hardState.Vote,
 		votes:            map[uint64]bool{},
 		Prs:              map[uint64]*Progress{},
 		RaftLog:          newLog(c.Storage),
@@ -180,8 +183,7 @@ func newRaft(c *Config) *Raft {
 	if raft.Term == 0 {
 		raft.Term = raft.RaftLog.LastTerm()
 	}
-	raft.becomeFollower(raft.Term, None)
-	raft.electionTimeout = raft.electionTimeout + rand.Intn(raft.electionTimeout)
+	raft.resetRandElectionTimeout()
 
 	// Init prs
 	if c.peers == nil {
@@ -333,7 +335,7 @@ func (r *Raft) tick() {
 
 func (r *Raft) tickElection() {
 	r.electionElapsed++
-	if r.electionElapsed >= r.electionTimeout && r.State != StateLeader {
+	if r.electionElapsed >= r.randomElectionTimeout && r.State != StateLeader {
 		r.electionElapsed = 0
 		_ = r.Step(pb.Message{
 			MsgType: pb.MessageType_MsgHup,
@@ -357,6 +359,9 @@ func (r *Raft) tickHeartbeat() {
 }
 
 /***********************************  3.becomexxx function  *****************************************/
+func (r *Raft) resetRandElectionTimeout() {
+	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
+}
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
@@ -367,7 +372,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 		r.State = StateFollower
 		r.Term = term
 		r.Lead = lead
-		r.electionTimeout = rand.Intn(r.electionTimeout) + r.electionTimeout
+		r.resetRandElectionTimeout()
 	}
 }
 
@@ -380,7 +385,7 @@ func (r *Raft) becomeCandidate() {
 
 	r.State = StateCandidate
 	r.Term++
-	r.electionTimeout = rand.Intn(r.electionTimeout) + r.electionTimeout
+	r.resetRandElectionTimeout()
 }
 
 // becomeLeader transform this peer's state to leader
@@ -513,10 +518,21 @@ func (r *Raft) stepLeader(m pb.Message) {
 		{
 			r.sendHeartbeatToFollowers()
 		}
+	// Handle heart beat response, if leader receive, it indicate that
+	// the follower doesn't have update-to-date log
+	case pb.MessageType_MsgHeartbeatResponse:
+		{
+			r.sendAppend(m.From)
+		}
 	// no-op log
 	case pb.MessageType_MsgPropose:
 		{
 			r.handlePropose(m)
+		}
+	// Message append, Revert back to follower
+	case pb.MessageType_MsgAppend:
+		{
+			r.handleAppendEntries(m)
 		}
 	// Append entries response
 	case pb.MessageType_MsgAppendResponse:
@@ -640,9 +656,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	// 1. reject lower term
 	if m.Term < r.Term {
-		r.sendAppendResponse(m.From, r.Term, 0, true)
+		r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), true)
 		return
 	}
+
+	// 2. revert back to follower
+	r.Lead = m.GetFrom()
 
 	// 2. check log consistency
 	preLogIndex, preLogTerm := m.Index, m.LogTerm
@@ -664,6 +683,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				// delete from here
 				r.RaftLog.deleteEntriesFromIndex(index)
 				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+				// update stableIndex
+				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 			}
 		} else {
 			r.RaftLog.appendEntries(m.Entries[i:])
@@ -672,7 +693,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 
 	// 4.update commitIndex
-	r.RaftLog.committed = min(r.RaftLog.committed, r.RaftLog.LastIndex())
+	if m.Commit > r.RaftLog.committed {
+		r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
+	}
 
 	// 5.send resp
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
@@ -736,7 +759,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Update
 	r.electionElapsed = 0
 	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+		r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
 	}
 
 	r.sendHeartbeatResponse(m.From)
