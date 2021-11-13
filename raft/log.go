@@ -95,6 +95,33 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 	return nil
 }
 
+func (l *RaftLog) getEntriesFromIndex(index uint64) []*pb.Entry {
+	var entries []*pb.Entry
+	for _, entry := range l.entries {
+		if entry.Index >= index {
+			entries = append(entries, &pb.Entry{
+				EntryType: entry.EntryType,
+				Term:      entry.Term,
+				Index:     entry.Index,
+				Data:      entry.Data,
+			})
+		}
+	}
+	return entries
+}
+
+func (l *RaftLog) deleteEntriesFromIndex(index uint64) {
+	for i, v := range l.entries {
+		if v.Index == index {
+			l.entries = l.entries[:i]
+		}
+	}
+	lastLogIndex := l.LastIndex()
+	l.committed = min(l.committed, lastLogIndex)
+	l.applied = min(l.applied, lastLogIndex)
+	l.stabled = min(l.stabled, lastLogIndex)
+}
+
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
@@ -135,8 +162,8 @@ func (l *RaftLog) LastTerm() uint64 {
 	return term
 }
 
-// appendEntries, call by followers
-func (l *RaftLog) appendEntries(entries []pb.Entry) {
+// appendEntries with their own term and index
+func (l *RaftLog) appendEntries(entries []*pb.Entry) {
 	for _, entry := range entries {
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,
@@ -147,8 +174,8 @@ func (l *RaftLog) appendEntries(entries []pb.Entry) {
 	}
 }
 
-// appendEntriesWithTerm, call by leader
-func (l *RaftLog) appendEntriesWithTerm(entries []pb.Entry, term uint64) {
+// appendEntriesWithTerm with target term
+func (l *RaftLog) appendEntriesWithTerm(entries []*pb.Entry, term uint64) {
 	for _, entry := range entries {
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,

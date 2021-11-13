@@ -229,7 +229,7 @@ stale log entries:
 
 	'MessageType_MsgRequestVote' requests votes for election. When a node is a follower or
 	candidate and 'MessageType_MsgHup' is passed to its Step method, then the node calls
-	'campaign' method to campaign itself to become a leader. Once 'campaign'
+	'handleCampaign' method to handleCampaign itself to become a leader. Once 'handleCampaign'
 	method is called, the node becomes candidate and sends 'MessageType_MsgRequestVote' to peers
 	in cluster to request votes. When passed to the leader or candidate's Step
 	method and the message's Term is lower than leader's or candidate's,
