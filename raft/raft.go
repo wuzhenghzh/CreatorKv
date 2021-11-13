@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 )
@@ -158,12 +157,6 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
-
-	// Tick func(electionTick, heartbeatTick)
-	tickFunc func()
-
-	// Step func(stepLeader, stepFollower, stepCandidate)
-	stepFunc func(m pb.Message)
 }
 
 // newRaft return a raft peer with the given config
@@ -187,7 +180,8 @@ func newRaft(c *Config) *Raft {
 	if raft.Term == 0 {
 		raft.Term = raft.RaftLog.LastTerm()
 	}
-	raft.electionTimeout += rand.Intn(raft.electionTimeout)
+	raft.becomeFollower(raft.Term, None)
+	raft.electionTimeout = raft.electionTimeout + rand.Intn(raft.electionTimeout)
 
 	// Init prs
 	if c.peers == nil {
@@ -329,7 +323,12 @@ func (r *Raft) sendRequestVoteResponse(to uint64, term uint64, reject bool) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
-	r.tickFunc()
+	switch r.State {
+	case StateLeader:
+		r.tickHeartbeat()
+	case StateFollower, StateCandidate:
+		r.tickElection()
+	}
 }
 
 func (r *Raft) tickElection() {
@@ -366,8 +365,6 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 		r.resetNode()
 
 		r.State = StateFollower
-		r.stepFunc = r.stepFollower
-		r.tickFunc = r.tickElection
 		r.Term = term
 		r.Lead = lead
 		r.electionTimeout = rand.Intn(r.electionTimeout) + r.electionTimeout
@@ -382,8 +379,6 @@ func (r *Raft) becomeCandidate() {
 	r.resetNode()
 
 	r.State = StateCandidate
-	r.stepFunc = r.stepCandidate
-	r.tickFunc = r.tickElection
 	r.Term++
 	r.electionTimeout = rand.Intn(r.electionTimeout) + r.electionTimeout
 }
@@ -395,8 +390,6 @@ func (r *Raft) becomeLeader() {
 	r.resetNode()
 
 	r.State = StateLeader
-	r.stepFunc = r.stepLeader
-	r.tickFunc = r.tickHeartbeat
 	r.Lead = r.id
 
 	// Update all progresses
@@ -432,12 +425,18 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	// Leader change
 	if m.Term > r.Term {
-		log.Infof("Node %d received a message with higher term, become follower, current term : %d, message term : %d", r.Term, m.Term)
 		r.becomeFollower(m.Term, None)
 	}
 
 	// Handle advancing message by specific node state
-	r.stepFunc(m)
+	switch r.State {
+	case StateLeader:
+		r.stepLeader(m)
+	case StateFollower:
+		r.stepFollower(m)
+	case StateCandidate:
+		r.stepCandidate(m)
+	}
 	return nil
 }
 
@@ -575,7 +574,9 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	// 3.check completeness
 	reject := true
 	lastLogIndex, lastLogTerm := m.Index, m.LogTerm
-	if lastLogTerm > r.Term || (lastLogTerm == r.Term && lastLogIndex >= r.RaftLog.LastIndex()) {
+	lastLocalIndex := r.RaftLog.LastIndex()
+	lastLocalTerm, _ := r.RaftLog.Term(lastLocalIndex)
+	if lastLogTerm > lastLocalTerm || (lastLogTerm == lastLocalTerm && lastLogIndex >= lastLocalIndex) {
 		reject = false
 		r.Vote = m.From
 	}

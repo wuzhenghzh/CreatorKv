@@ -74,8 +74,8 @@ func newLog(storage Storage) *RaftLog {
 	}
 	return &RaftLog{
 		storage:       storage,
-		committed:     -1,
-		applied:       -1,
+		committed:     firstIndex - 1,
+		applied:       firstIndex - 1,
 		firstLogIndex: firstIndex,
 		stabled:       lastIndex,
 		entries:       entries,
