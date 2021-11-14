@@ -3,19 +3,18 @@ package standalone_storage
 import (
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/config"
-	storage "github.com/pingcap-incubator/tinykv/kv/storage"
+	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pkg/errors"
-	"path/filepath"
 )
 
 // StandAloneStorage is an implementation of `Storage` for a single-node TinyKV instance. It does not
 // communicate with other nodes and all data is stored locally.
-// StandAloneStorage 就是对 'badger' 这个单机键值引擎的封装
+// StandAloneStorage is a wrapper of badger, it creates two badger instance, see lab-2B
 type StandAloneStorage struct {
 	// Your Data Here (1).
-	engine *engine_util.Engines
+	db     *badger.DB
 	config *config.Config
 }
 
@@ -30,63 +29,47 @@ func (s *StandAloneStorage) Start() error {
 	// Your Code Here (1).
 	conf := s.config
 	path := conf.DBPath
-	kvPath := filepath.Join(path, "kv")
-	raftPath := filepath.Join(path, "raft")
-
-	kvDB := engine_util.CreateDB(kvPath, false)
-	raftDB := engine_util.CreateDB(raftPath, true)
-	s.engine = engine_util.NewEngines(kvDB, raftDB, kvPath, raftPath)
+	s.db = engine_util.CreateDB(path, conf.Raft)
 	return nil
 }
 
 func (s *StandAloneStorage) Stop() error {
-	return s.engine.Close()
+	return s.db.Close()
 }
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	// Your Code Here (1).
-	if s.engine == nil {
-		return nil, errors.New("The store engine is not init")
+	if s.db == nil {
+		return nil, errors.New("The store db is not init")
 	}
 
-	kvTxn := s.engine.Kv.NewTransaction(false)
-	raftTxn := s.engine.Raft.NewTransaction(false)
 	return BadgerReader{
-		kvTxn:   kvTxn,
-		raftTxn: raftTxn,
+		txn: s.db.NewTransaction(false),
 	}, nil
 }
 
 func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
-	if s.engine == nil {
-		return errors.New("The store engine is not init")
+	if s.db == nil {
+		return errors.New("The store db is not init")
 	}
-	for _, modify := range batch {
-		cfKey := engine_util.KeyWithCF(modify.Cf(), modify.Key())
-		db := s.engine.Kv
-		err := db.Update(func(txn *badger.Txn) error {
-			switch modify.Data.(type) {
-			case storage.Delete:
-				return txn.Delete(cfKey)
-			case storage.Put:
-				return txn.Set(cfKey, modify.Value())
-			}
-			return nil
-		})
-		if err != nil {
-			return err
+	writeBatch := new(engine_util.WriteBatch)
+	for _, x := range batch {
+		switch x.Data.(type) {
+		case storage.Put:
+			writeBatch.SetCF(x.Cf(), x.Key(), x.Value())
+		case storage.Delete:
+			writeBatch.DeleteCF(x.Cf(), x.Key())
 		}
 	}
-	return nil
+	return writeBatch.WriteToDB(s.db)
 }
 
 type BadgerReader struct {
-	kvTxn   *badger.Txn
-	raftTxn *badger.Txn
+	txn *badger.Txn
 }
 
 func (b BadgerReader) GetCF(cf string, key []byte) ([]byte, error) {
-	txn := b.kvTxn
+	txn := b.txn
 	value, err := engine_util.GetCFFromTxn(txn, cf, key)
 	if err != nil && err == badger.ErrKeyNotFound {
 		// That means the key is not existed
@@ -96,15 +79,12 @@ func (b BadgerReader) GetCF(cf string, key []byte) ([]byte, error) {
 }
 
 func (b BadgerReader) IterCF(cf string) engine_util.DBIterator {
-	txn := b.kvTxn
+	txn := b.txn
 	return engine_util.NewCFIterator(cf, txn)
 }
 
 func (b BadgerReader) Close() {
-	if b.kvTxn != nil {
-		b.kvTxn.Discard()
-	}
-	if b.raftTxn != nil {
-		b.raftTxn.Discard()
+	if b.txn != nil {
+		b.txn.Discard()
 	}
 }

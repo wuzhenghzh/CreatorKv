@@ -308,6 +308,31 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	if len(entries) == 0 {
+		return nil
+	}
+	regionId := ps.region.Id
+	psFirstIndex, _ := ps.FirstIndex()
+	psLastIndex, _ := ps.LastIndex()
+	lastEntry := entries[len(entries)-1]
+	for _, entry := range entries {
+		if entry.Index > psFirstIndex {
+			continue
+		}
+		err := raftWB.SetMeta(meta.RaftLogKey(regionId, entry.Index), &entry)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Delete log entries that will never be committed
+	for index := lastEntry.Index + 1; index <= psLastIndex; index++ {
+		raftWB.DeleteMeta(meta.RaftLogKey(regionId, index))
+	}
+
+	// Update ps.raftState
+	ps.raftState.LastIndex = lastEntry.Index
+	ps.raftState.LastTerm = lastEntry.Term
 	return nil
 }
 
@@ -328,10 +353,52 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 // Save memory states to disk.
 // Do not modify ready in this function, this is a requirement to advance the ready object properly later.
+// Save append log entries and save the Raft hard state.
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	return nil, nil
+	kvWB := new(engine_util.WriteBatch)
+	raftWB := new(engine_util.WriteBatch)
+
+	// Append log to raftWB
+	if len(ready.Entries) > 0 {
+		err := ps.Append(ready.Entries, raftWB)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Append hardState to raftWB
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+		err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Apply snapshot
+	var applySnapResult *ApplySnapResult
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		if err != nil {
+			return nil, err
+		}
+		applySnapResult = result
+	}
+
+	// Write data to each db
+	err := ps.Engines.WriteRaft(raftWB)
+	if err != nil {
+		return nil, err
+	}
+
+	err = ps.Engines.WriteKV(kvWB)
+	if err != nil {
+		return nil, err
+	}
+
+	return applySnapResult, nil
 }
 
 func (ps *PeerStorage) ClearData() {
