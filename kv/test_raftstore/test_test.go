@@ -390,6 +390,10 @@ func TestOnePartition2B(t *testing.T) {
 	})
 	cluster.MustPut([]byte("k1"), []byte("v1"))
 	cluster.MustGet([]byte("k1"), []byte("v1"))
+	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("v1"))
+	MustGetEqual(cluster.engines[s1[1]], []byte("k1"), []byte("v1"))
+	MustGetEqual(cluster.engines[s1[2]], []byte("k1"), []byte("v1"))
+
 	MustGetNone(cluster.engines[s2[0]], []byte("k1"))
 	MustGetNone(cluster.engines[s2[1]], []byte("k1"))
 	cluster.ClearFilters()
