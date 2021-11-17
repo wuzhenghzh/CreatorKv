@@ -112,10 +112,7 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry era
 
 	// Save updates and applyState to persisted storage
 	d.persistApplyState(kvWB, entry.Index)
-	err := kvWB.WriteToDB(d.peerStorage.Engines.Kv)
-	if err != nil {
-		log.Errorf("Error when apply changes to kv badger db: %s", err.Error())
-	}
+	d.writeChangesToKvDB(kvWB)
 
 	// Get propose
 	pr := d.getAndRemoveProposal(entry.Index)
@@ -179,15 +176,63 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry era
 }
 
 func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, entry eraftpb.Entry) {
+	kvWB := new(engine_util.WriteBatch)
+	switch request.CmdType {
+	// Compact log
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		{
+			d.handleCompactLogRequest(request.CompactLog, kvWB)
+		}
+	}
+}
 
+// handleCompactLogRequest update truncated state, schedule gc task to raftLog-gc worker
+func (d *peerMsgHandler) handleCompactLogRequest(req *raft_cmdpb.CompactLogRequest, kvWB *engine_util.WriteBatch) {
+	lastIndex, lastTerm := req.CompactIndex, req.CompactTerm
+	if lastIndex < d.LastCompactedIdx {
+		return
+	}
+	d.persistTruncateState(kvWB, lastIndex, lastTerm)
+	d.writeChangesToKvDB(kvWB)
+	d.LastCompactedIdx = lastIndex
+
+	// Send gc task
+	gcTask := &runner.RaftLogGCTask{
+		RaftEngine: d.peerStorage.Engines.Raft,
+		RegionID:   d.regionId,
+		StartIdx:   d.LastCompactedIdx + 1,
+		EndIdx:     lastIndex + 1,
+	}
+	d.ctx.raftLogGCTaskSender <- gcTask
 }
 
 func (d *peerMsgHandler) persistApplyState(kvWB *engine_util.WriteBatch, index uint64) {
-	d.peer.peerStorage.applyState.AppliedIndex = index
-	err := kvWB.SetMeta(meta.ApplyStateKey(d.peer.regionId), d.peer.peerStorage.applyState)
+	d.peerStorage.applyState.AppliedIndex = index
+	err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peer.peerStorage.applyState)
 	if err != nil {
 		log.Errorf("Error when set applyState meta: %s", err.Error())
 	}
+}
+
+func (d *peerMsgHandler) persistTruncateState(kvWB *engine_util.WriteBatch, index, term uint64) {
+	if index < d.LastCompactedIdx {
+		return
+	}
+	applyState := d.peerStorage.applyState
+	applyState.TruncatedState.Index = index
+	applyState.TruncatedState.Term = term
+	err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), applyState)
+	if err != nil {
+		log.Errorf("Error when set applyState meta: %s", err.Error())
+	}
+}
+
+func (d *peerMsgHandler) writeChangesToKvDB(kvWB *engine_util.WriteBatch) {
+	err := kvWB.WriteToDB(d.peerStorage.Engines.Kv)
+	if err != nil {
+		log.Errorf("Error happens when write changes to kv badger, regionId: %d, %s", d.regionId, err.Error())
+	}
+
 }
 
 // HandleMsg handle upper application msgs
@@ -296,7 +341,14 @@ func (d *peerMsgHandler) proposeDataRequest(msg *raft_cmdpb.RaftCmdRequest, cb *
 }
 
 func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-
+	adminRequest := msg.AdminRequest
+	switch adminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		{
+			// Propose request directly
+			d.proposeDataRequest(msg, cb)
+		}
+	}
 }
 
 func (d *peerMsgHandler) onTick() {
