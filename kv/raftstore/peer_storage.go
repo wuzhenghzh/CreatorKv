@@ -315,13 +315,17 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	psFirstIndex, _ := ps.FirstIndex()
 	psLastIndex, _ := ps.LastIndex()
 	lastEntry := entries[len(entries)-1]
+	if lastEntry.Index < psFirstIndex {
+		return nil
+	}
+
 	for _, entry := range entries {
-		if entry.Index > psFirstIndex {
+		if entry.Index < psFirstIndex {
 			continue
 		}
 		err := raftWB.SetMeta(meta.RaftLogKey(regionId, entry.Index), &entry)
 		if err != nil {
-			return err
+			return errors.Trace(err)
 		}
 	}
 
@@ -364,17 +368,17 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if len(ready.Entries) > 0 {
 		err := ps.Append(ready.Entries, raftWB)
 		if err != nil {
-			return nil, err
+			return nil, errors.Trace(err)
 		}
 	}
 
 	// Append hardState to raftWB
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
-		err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-		if err != nil {
-			return nil, err
-		}
+	}
+	err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
 
 	// Apply snapshot
@@ -382,20 +386,20 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if !raft.IsEmptySnap(&ready.Snapshot) {
 		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
-			return nil, err
+			return nil, errors.Trace(err)
 		}
 		applySnapResult = result
 	}
 
 	// Write data to each db
-	err := ps.Engines.WriteRaft(raftWB)
+	err = raftWB.WriteToDB(ps.Engines.Raft)
 	if err != nil {
-		return nil, err
+		return nil, errors.Trace(err)
 	}
 
-	err = ps.Engines.WriteKV(kvWB)
+	err = kvWB.WriteToDB(ps.Engines.Kv)
 	if err != nil {
-		return nil, err
+		return nil, errors.Trace(err)
 	}
 
 	return applySnapResult, nil

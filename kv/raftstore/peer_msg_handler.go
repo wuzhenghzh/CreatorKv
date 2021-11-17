@@ -55,7 +55,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	ready := raftGroup.Ready()
 
 	// Save hardState
-	d.peerStorage.SaveReadyState(&ready)
+	_, err := d.peerStorage.SaveReadyState(&ready)
+	if err != nil {
+		log.Errorf("Error happens when save ready state: %s", err.Error())
+	}
 
 	// Send message
 	d.Send(d.ctx.trans, ready.Messages)
@@ -189,7 +192,7 @@ func (d *peerMsgHandler) persistApplyState(kvWB *engine_util.WriteBatch, index u
 func (d *peerMsgHandler) applyChangesToKvDB(kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	err := kvWB.WriteToDB(d.peerStorage.Engines.Kv)
 	if err != nil {
-		log.Errorf("Error when apply changes to kv badger db: %s")
+		log.Errorf("Error when apply changes to kv badger db: %s", err.Error())
 	}
 	return new(engine_util.WriteBatch)
 }

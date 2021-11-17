@@ -70,7 +70,7 @@ func newLog(storage Storage) *RaftLog {
 	}
 	entries, err := storage.Entries(firstIndex, lastIndex+1)
 	if err != nil {
-		log.Errorf("Error happens when get log entries from storage, %s", err.Error())
+		log.Errorf("Error happens when get log entries[%d, %d] from storage, %s", firstIndex, lastIndex+1, err.Error())
 	}
 	return &RaftLog{
 		storage:       storage,
