@@ -54,7 +54,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	ready := raftGroup.Ready()
 
-	// Save hardState
+	// Save ready state
 	_, err := d.peerStorage.SaveReadyState(&ready)
 	if err != nil {
 		log.Errorf("Error happens when save ready state: %s", err.Error())
@@ -65,13 +65,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// Apply log to machine
 	if len(ready.CommittedEntries) > 0 {
-		kvWB := new(engine_util.WriteBatch)
-		for _, v := range ready.CommittedEntries {
-			d.applyCommittedEntry(v, kvWB)
+		for _, entry := range ready.CommittedEntries {
+			d.applyCommittedEntry(entry)
 		}
-		// Apply changes and save appliedIndex
-		d.persistApplyState(kvWB, ready.CommittedEntries[len(ready.CommittedEntries)-1].Index)
-		d.applyChangesToKvDB(kvWB)
 	}
 
 	// Advance
@@ -79,7 +75,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 }
 
 // applyCommittedEntry apply committed entry to state machine, include data request and admin request
-func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry, kvWB *engine_util.WriteBatch) {
+func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry) {
 	if entry.Data == nil {
 		return
 	}
@@ -92,16 +88,18 @@ func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry, kvWB *engine_u
 
 	// Apply data request
 	if len(msg.Requests) > 0 {
-		d.applyDataRequest(msg.Requests[0], kvWB, entry)
+		d.applyDataRequest(msg.Requests[0], entry)
 	}
 
 	// Apply admin request
 	if msg.AdminRequest != nil {
-		d.applyAdminRequest(msg.AdminRequest, kvWB, entry)
+		d.applyAdminRequest(msg.AdminRequest, entry)
 	}
 }
 
-func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, kvWB *engine_util.WriteBatch, entry eraftpb.Entry) {
+func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry eraftpb.Entry) {
+	kvWB := new(engine_util.WriteBatch)
+
 	// Apply modified changes
 	switch request.GetCmdType() {
 	case raft_cmdpb.CmdType_Put:
@@ -110,6 +108,13 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, kvWB *eng
 	case raft_cmdpb.CmdType_Delete:
 		deleteRequest := request.GetDelete()
 		kvWB.DeleteCF(deleteRequest.GetCf(), deleteRequest.GetKey())
+	}
+
+	// Save updates and applyState to persisted storage
+	d.persistApplyState(kvWB, entry.Index)
+	err := kvWB.WriteToDB(d.peerStorage.Engines.Kv)
+	if err != nil {
+		log.Errorf("Error when apply changes to kv badger db: %s", err.Error())
 	}
 
 	// Get propose
@@ -147,10 +152,6 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, kvWB *eng
 	// Apply get
 	case raft_cmdpb.CmdType_Get:
 		{
-			// If type is get, we should write changes to db first, so that this request can see pre changes
-			d.persistApplyState(kvWB, pr.index)
-			kvWB = d.applyChangesToKvDB(kvWB)
-
 			getRequest := request.Get
 			data, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, getRequest.Cf, getRequest.Key)
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
@@ -177,7 +178,7 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, kvWB *eng
 	pr.cb.Done(resp)
 }
 
-func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, kvWB *engine_util.WriteBatch, entry eraftpb.Entry) {
+func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, entry eraftpb.Entry) {
 
 }
 
@@ -187,14 +188,6 @@ func (d *peerMsgHandler) persistApplyState(kvWB *engine_util.WriteBatch, index u
 	if err != nil {
 		log.Errorf("Error when set applyState meta: %s", err.Error())
 	}
-}
-
-func (d *peerMsgHandler) applyChangesToKvDB(kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
-	err := kvWB.WriteToDB(d.peerStorage.Engines.Kv)
-	if err != nil {
-		log.Errorf("Error when apply changes to kv badger db: %s", err.Error())
-	}
-	return new(engine_util.WriteBatch)
 }
 
 // HandleMsg handle upper application msgs
@@ -298,7 +291,7 @@ func (d *peerMsgHandler) proposeDataRequest(msg *raft_cmdpb.RaftCmdRequest, cb *
 
 	err = d.RaftGroup.Propose(data)
 	if err != nil {
-		log.Infof("Error when propose a msg: %s", err.Error())
+		log.Errorf("Error when propose a msg: %s", err.Error())
 	}
 }
 
