@@ -792,7 +792,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 	lastIndex, lastTerm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
-	if lastTerm < r.Term || lastIndex < r.RaftLog.committed {
+	if lastTerm < r.Term || lastIndex <= r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), true)
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"reflect"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -42,7 +43,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-// Receive ready from rawNode, and apply same changes
+// Receive ready from rawNode, and apply same change s
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
@@ -63,16 +64,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Update region info in storeMeta
 	if snapshotApplyResult != nil {
 		preRegion, curRegion := snapshotApplyResult.PrevRegion, snapshotApplyResult.Region
-		storeMeta := d.ctx.storeMeta
-		storeMeta.Lock()
-		storeMeta.regions[curRegion.Id] = curRegion
-		storeMeta.regionRanges.Delete(&regionItem{
-			region: preRegion,
-		})
-		storeMeta.regionRanges.ReplaceOrInsert(&regionItem{
-			region: curRegion,
-		})
-		storeMeta.Unlock()
+		if !reflect.DeepEqual(preRegion, curRegion) {
+			d.peerStorage.region = snapshotApplyResult.Region
+			d.ctx.storeMeta.replaceRegion(preRegion, curRegion)
+		}
 	}
 
 	// Send message

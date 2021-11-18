@@ -84,6 +84,18 @@ func (m *storeMeta) getOverlapRegions(region *metapb.Region) []*metapb.Region {
 	return overlaps
 }
 
+func (m *storeMeta) replaceRegion(preRegion, curRegion *metapb.Region) {
+	m.Lock()
+	m.regions[curRegion.Id] = curRegion
+	m.regionRanges.Delete(&regionItem{
+		region: preRegion,
+	})
+	m.regionRanges.ReplaceOrInsert(&regionItem{
+		region: curRegion,
+	})
+	m.Unlock()
+}
+
 type GlobalContext struct {
 	cfg                  *config.Config
 	engine               *engine_util.Engines
