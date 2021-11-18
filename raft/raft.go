@@ -216,13 +216,13 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	nextIndex := r.Prs[to].Next
-	entries := r.RaftLog.getEntriesFromIndex(nextIndex)
-
 	preLogIndex := nextIndex - 1
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
 		return r.sendSnapshot(to)
 	}
+
+	entries := r.RaftLog.getEntriesFromIndex(nextIndex)
 	r.sendMessage(pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		From:    r.id,
@@ -274,6 +274,7 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 		Snapshot: &snapshot,
 	}
 	r.sendMessage(snapshotRequest)
+	r.Prs[to].Next = snapshot.GetMetadata().GetIndex() + 1
 	return true
 }
 

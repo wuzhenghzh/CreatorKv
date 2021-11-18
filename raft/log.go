@@ -88,15 +88,18 @@ func newLog(storage Storage) *RaftLog {
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
 	firstUnStabledIndex, _ := l.storage.FirstIndex()
-	truncateIndex := 0
-	for i, entry := range l.entries {
-		if entry.Index < firstUnStabledIndex {
-			truncateIndex = i
-		} else {
+	for len(l.entries) > 0 {
+		if l.firstLogIndex >= firstUnStabledIndex {
 			break
 		}
+		// Delete first log
+		l.entries = l.entries[1:]
+		if len(l.entries) == 0 {
+			l.firstLogIndex = 0
+		} else {
+			l.firstLogIndex = l.entries[0].Index
+		}
 	}
-	l.entries = l.entries[truncateIndex:]
 }
 
 // unstableEntries return all the unstable entries
@@ -165,6 +168,11 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	if !IsEmptySnap(l.pendingSnapshot) {
+		if i == l.pendingSnapshot.Metadata.GetIndex() {
+			return l.pendingSnapshot.Metadata.GetTerm(), nil
+		}
+	}
 	for _, entry := range l.entries {
 		if entry.Index == i {
 			return entry.Term, nil
@@ -175,9 +183,6 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 // LastTerm return the last term of the log entries
 func (l *RaftLog) LastTerm() uint64 {
-	if !IsEmptySnap(l.pendingSnapshot) {
-		return l.pendingSnapshot.Metadata.Term
-	}
 	term, _ := l.Term(l.LastIndex())
 	return term
 }
