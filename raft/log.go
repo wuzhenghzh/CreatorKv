@@ -151,6 +151,9 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	if !IsEmptySnap(l.pendingSnapshot) {
+		return l.pendingSnapshot.Metadata.Index
+	}
 	logLen := len(l.entries)
 	if logLen >= 1 {
 		return l.entries[logLen-1].Index
@@ -172,6 +175,9 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 // LastTerm return the last term of the log entries
 func (l *RaftLog) LastTerm() uint64 {
+	if !IsEmptySnap(l.pendingSnapshot) {
+		return l.pendingSnapshot.Metadata.Term
+	}
 	term, _ := l.Term(l.LastIndex())
 	return term
 }
@@ -198,4 +204,11 @@ func (l *RaftLog) appendEntriesWithTerm(entries []*pb.Entry, term uint64) {
 			Data:      entry.Data,
 		})
 	}
+}
+
+func (l *RaftLog) resetAllIndex(index uint64) {
+	l.committed = index
+	l.applied = index
+	l.stabled = index
+	l.firstLogIndex = index + 1
 }

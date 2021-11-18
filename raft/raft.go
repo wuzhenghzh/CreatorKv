@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 )
@@ -218,7 +219,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	entries := r.RaftLog.getEntriesFromIndex(nextIndex)
 
 	preLogIndex := nextIndex - 1
-	preLogTerm, _ := r.RaftLog.Term(preLogIndex)
+	preLogTerm, err := r.RaftLog.Term(preLogIndex)
+	if err != nil {
+		return r.sendSnapshot(to)
+	}
 	r.sendMessage(pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		From:    r.id,
@@ -257,7 +261,20 @@ func (r *Raft) sendAppendResponse(to uint64, term uint64, lastIndex uint64, reje
 // sendSnapshot send snapshot to the given peer
 func (r *Raft) sendSnapshot(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		log.Errorf("Error when create snapshot : %s", err.Error())
+		return false
+	}
+	snapshotRequest := pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		Snapshot: &snapshot,
+	}
+	r.sendMessage(snapshotRequest)
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -507,6 +524,11 @@ func (r *Raft) stepCandidate(m pb.Message) {
 		{
 			r.handleHeartbeat(m)
 		}
+	// Snapshot request
+	case pb.MessageType_MsgSnapshot:
+		{
+			r.handleSnapshot(m)
+		}
 	}
 }
 
@@ -544,10 +566,10 @@ func (r *Raft) stepLeader(m pb.Message) {
 		{
 			r.handleRequestVote(m)
 		}
-	// Install snapshot
+	// Snapshot request
 	case pb.MessageType_MsgSnapshot:
 		{
-
+			r.handleSnapshot(m)
 		}
 	}
 }
@@ -768,6 +790,17 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	lastIndex, lastTerm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
+	if lastTerm < r.Term || lastIndex < r.RaftLog.committed {
+		r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), true)
+		return
+	}
+	r.becomeFollower(m.Term, m.From)
+	// Reset log status
+	r.RaftLog.resetAllIndex(lastIndex)
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.RaftLog.entries = []pb.Entry{}
+	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
 }
 
 // addNode add a new node to raft group
