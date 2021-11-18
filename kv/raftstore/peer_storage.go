@@ -366,17 +366,19 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 	// 1.update raft state, raftState will be appended to raftWB in SaveReadyState()
 	raftState := ps.raftState
-	raftState.LastIndex, raftState.LastTerm = lastIndex, lastTerm
+	raftState.LastIndex = lastIndex
+	raftState.LastTerm = lastTerm
 
 	// 2.update apply state
 	applyState := ps.applyState
 	applyState.AppliedIndex = lastIndex
-	applyState.TruncatedState.Index, applyState.TruncatedState.Term = lastIndex, lastTerm
-	_ = kvWB.SetMeta(meta.ApplyStateKey(regionId), applyState)
+	applyState.TruncatedState.Index = lastIndex
+	applyState.TruncatedState.Term = lastTerm
+	_ = kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), applyState)
 
 	// 3.send regionTaskApply to region worker by regionSched
 	notifier := make(chan bool, 1)
-	applyTask := runner.RegionTaskApply{
+	applyTask := &runner.RegionTaskApply{
 		RegionId: regionId,
 		SnapMeta: snapshot.Metadata,
 		StartKey: snapData.Region.StartKey,
@@ -384,6 +386,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		Notifier: notifier,
 	}
 	ps.regionSched <- applyTask
+
 	// wait task done
 	<-notifier
 	ps.snapState.StateType = snap.SnapState_Applying

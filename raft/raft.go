@@ -263,7 +263,7 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	// Your Code Here (2A).
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		log.Errorf("Error when create snapshot : %s", err.Error())
+		log.Errorf("Fail to send snapshot to server : %d , error when create snapshot : %s", to, err.Error())
 		return false
 	}
 	snapshotRequest := pb.Message{
@@ -801,6 +801,20 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.RaftLog.resetAllIndex(lastIndex)
 	r.RaftLog.pendingSnapshot = m.Snapshot
 	r.RaftLog.entries = []pb.Entry{}
+	// Conf nodes
+	conf := m.Snapshot.Metadata.ConfState
+	if conf != nil && len(conf.Nodes) > 0 {
+		for _, node := range conf.Nodes {
+			_, existed := r.Prs[node]
+			if !existed {
+				r.Prs[node] = &Progress{
+					Match: 0,
+					Next:  r.RaftLog.LastIndex() + 1,
+				}
+			}
+		}
+	}
+
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
 }
 
