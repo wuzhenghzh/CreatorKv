@@ -153,6 +153,7 @@ type Raft struct {
 	leadTransferee uint64
 
 	// number of ticks since it reached last leaderTransfer request.
+	// todo: hwo to set the limit timeout?
 	leaderTransferElapsed int
 
 	// Only one conf change may be pending (in the log, but not yet
@@ -444,7 +445,7 @@ func (r *Raft) becomeLeader() {
 		Term:      r.Term,
 		Index:     r.RaftLog.LastIndex() + 1,
 	}
-	r.RaftLog.appendEntries([]*pb.Entry{noopLog})
+	r.RaftLog.appendEntries([]*pb.Entry{noopLog}, &r.PendingConfIndex)
 	r.broadcast()
 
 	// Update self progress
@@ -703,7 +704,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 
 	entries := m.Entries
 	// 1.append to locals
-	r.RaftLog.appendEntriesWithTerm(entries, r.Term)
+	r.RaftLog.appendEntriesWithTerm(entries, r.Term, &r.PendingConfIndex)
 
 	// 2.broadcast to followers
 	r.broadcast()
@@ -755,7 +756,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 			}
 		} else {
-			r.RaftLog.appendEntries(m.Entries[i:])
+			r.RaftLog.appendEntries(m.Entries[i:], &r.PendingConfIndex)
 			break
 		}
 	}
@@ -907,11 +908,26 @@ func (r *Raft) handleTimeoutNowRequest(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	r.PendingConfIndex = None
+	_, existed := r.Prs[id]
+	if !existed {
+		r.Prs[id] = &Progress{
+			Match: 0,
+			Next:  r.RaftLog.LastIndex() + 1,
+		}
+		r.sendAppend(id)
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	r.PendingConfIndex = None
+	_, existed := r.Prs[id]
+	if existed {
+		delete(r.Prs, id)
+		r.boostCommitIndexAndBroadCast()
+	}
 }
 
 func (r *Raft) resetNode() {

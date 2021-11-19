@@ -188,8 +188,15 @@ func (l *RaftLog) LastTerm() uint64 {
 }
 
 // appendEntries with their own term and index
-func (l *RaftLog) appendEntries(entries []*pb.Entry) {
+func (l *RaftLog) appendEntries(entries []*pb.Entry, pendingConfIndex *uint64) {
 	for _, entry := range entries {
+		if entry.EntryType == pb.EntryType_EntryConfChange {
+			if *pendingConfIndex == None {
+				*pendingConfIndex = entry.Index
+			} else {
+				continue
+			}
+		}
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,
 			Term:      entry.Term,
@@ -200,8 +207,15 @@ func (l *RaftLog) appendEntries(entries []*pb.Entry) {
 }
 
 // appendEntriesWithTerm with target term
-func (l *RaftLog) appendEntriesWithTerm(entries []*pb.Entry, term uint64) {
+func (l *RaftLog) appendEntriesWithTerm(entries []*pb.Entry, term uint64, pendingConfIndex *uint64) {
 	for _, entry := range entries {
+		if entry.EntryType == pb.EntryType_EntryConfChange {
+			if *pendingConfIndex == None {
+				*pendingConfIndex = entry.Index
+			} else {
+				continue
+			}
+		}
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,
 			Term:      term,
