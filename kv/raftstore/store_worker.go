@@ -79,7 +79,7 @@ func (d *storeWorker) handleMsg(msg message.Msg) {
 	switch msg.Type {
 	case message.MsgTypeStoreRaftMessage:
 		if err := d.onRaftMessage(msg.Data.(*rspb.RaftMessage)); err != nil {
-			log.Errorf("handle raft message failed storeID %d, %v", d.id, err)
+			log.Errorf("handle raft message failed, storeID %d %v", d.id, err)
 		}
 	case message.MsgTypeStoreTick:
 		d.onTick(msg.Data.(StoreTick))
@@ -143,8 +143,8 @@ func (d *storeWorker) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 		return true, nil
 	}
 	if fromEpoch.ConfVer == regionEpoch.ConfVer {
-		return false, errors.Errorf("tombstone peer [epoch: %s] received an invalid message %s, ignore it",
-			regionEpoch, msgType)
+		return false, errors.Errorf("tombstone peer [epoch: %s] received an invalid message %s from peer %d, ignore it",
+			regionEpoch, msgType, msg.FromPeer.Id)
 	}
 	return false, nil
 }

@@ -90,10 +90,9 @@ func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry) {
 	if entry.Data == nil {
 		return
 	}
-	msg := raft_cmdpb.RaftCmdRequest{}
-	err := msg.Unmarshal(entry.Data)
+
+	msg, err := d.unMarshalRequest(entry)
 	if err != nil {
-		log.Errorf("Error when decode msg: %s", err.Error())
 		return
 	}
 
@@ -106,6 +105,30 @@ func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry) {
 	if msg.AdminRequest != nil {
 		d.applyAdminRequest(msg.AdminRequest, entry, msg)
 	}
+}
+
+func (d *peerMsgHandler) unMarshalRequest(entry eraftpb.Entry) (raft_cmdpb.RaftCmdRequest, error) {
+	msg := raft_cmdpb.RaftCmdRequest{}
+	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
+		cc := eraftpb.ConfChange{}
+		err := cc.Unmarshal(entry.Data)
+		if err != nil {
+			log.Errorf("Error when decode conf change msg: %s", err.Error())
+			return msg, errors.Trace(err)
+		}
+		err = msg.Unmarshal(cc.Context)
+		if err != nil {
+			log.Errorf("Error when decode raft cmd msg: %s", err.Error())
+			return msg, errors.Trace(err)
+		}
+	} else {
+		err := msg.Unmarshal(entry.Data)
+		if err != nil {
+			log.Errorf("Error when decode raft cmd msg: %s", err.Error())
+			return msg, errors.Trace(err)
+		}
+	}
+	return msg, nil
 }
 
 func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry eraftpb.Entry) {
@@ -193,7 +216,6 @@ func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, ent
 		{
 			d.handleCompactLog(request.CompactLog)
 		}
-	// Change peer
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		{
 			d.handleChangePeer(request.ChangePeer, entry, msg)
@@ -306,7 +328,6 @@ func (d *peerMsgHandler) handleChangePeer(req *raft_cmdpb.ChangePeerRequest, ent
 	// Destroy peer if needed
 	if req.ChangeType == eraftpb.ConfChangeType_RemoveNode && req.Peer.Id == d.Meta.Id {
 		d.destroyPeer()
-		return
 	}
 
 	// Apply conf change to raft group
@@ -476,7 +497,7 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		{
 			changePeerRequest := adminRequest.ChangePeer
-			data, err := msg.Marshal()
+			data, err := proto.Marshal(msg)
 			if err != nil {
 				log.Errorf("Error when encode msg: %s", err.Error())
 				return
