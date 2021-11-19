@@ -149,12 +149,8 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry era
 	d.writeChangesToKvDB(kvWB)
 
 	// Get propose
-	pr := d.getAndRemoveProposal(entry.Index)
-	if pr == nil {
-		return
-	}
-	if pr.term != entry.Term {
-		NotifyStaleReq(entry.Term, pr.cb)
+	pr, err := d.getProposal(entry.Index, entry.Term)
+	if err != nil {
 		return
 	}
 
@@ -250,16 +246,11 @@ func (d *peerMsgHandler) handleCompactLog(req *raft_cmdpb.CompactLogRequest) {
 // handleChangePeer change peer ( add / remove node)
 func (d *peerMsgHandler) handleChangePeer(req *raft_cmdpb.ChangePeerRequest, entry eraftpb.Entry, msg raft_cmdpb.RaftCmdRequest) {
 	// Get propose
-	pr := d.getAndRemoveProposal(entry.Index)
-	if pr == nil {
-		return
-	}
-	if pr.term != entry.Term {
-		NotifyStaleReq(entry.Term, pr.cb)
-		return
-	}
-
 	if err := util.CheckRegionEpoch(&msg, d.Region(), true); err != nil {
+		pr, err := d.getProposal(entry.Index, entry.Term)
+		if err != nil {
+			return
+		}
 		pr.cb.Done(ErrResp(errors.Trace(err)))
 		return
 	}
@@ -344,7 +335,24 @@ func (d *peerMsgHandler) handleChangePeer(req *raft_cmdpb.ChangePeerRequest, ent
 			Region: d.peerStorage.region,
 		},
 	}
+
+	pr, err := d.getProposal(entry.Index, entry.Term)
+	if err != nil {
+		return
+	}
 	pr.cb.Done(resp)
+}
+
+func (d *peerMsgHandler) getProposal(index uint64, expectedTerm uint64) (*proposal, error) {
+	pr := d.getAndRemoveProposal(index)
+	if pr == nil {
+		return nil, errors.New("Failed to get pr")
+	}
+	if pr.term != expectedTerm {
+		NotifyStaleReq(expectedTerm, pr.cb)
+		return nil, errors.New("Stale request")
+	}
+	return pr, nil
 }
 
 func (d *peerMsgHandler) persistApplyState(kvWB *engine_util.WriteBatch, index uint64) {
