@@ -152,6 +152,9 @@ type Raft struct {
 	// (Used in 3A leader transfer)
 	leadTransferee uint64
 
+	// number of ticks since it reached last leaderTransfer request.
+	leaderTransferElapsed int
+
 	// Only one conf change may be pending (in the log, but not yet
 	// applied) at a time. This is enforced via PendingConfIndex, which
 	// is set to a value >= the log index of the latest pending
@@ -192,7 +195,7 @@ func newRaft(c *Config) *Raft {
 	}
 	for _, peer := range c.peers {
 		if peer == raft.id {
-			raft.Prs[peer] = &Progress{
+			raft.Prs[raft.id] = &Progress{
 				Match: raft.RaftLog.LastIndex(),
 				Next:  raft.RaftLog.LastIndex() + 1,
 			}
@@ -338,6 +341,16 @@ func (r *Raft) sendRequestVoteResponse(to uint64, term uint64, reject bool) {
 	r.sendMessage(resp)
 }
 
+func (r *Raft) sendTimeoutNowRequest(to uint64, term uint64) {
+	m := pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		From:    r.id,
+		To:      to,
+		Term:    term,
+	}
+	r.sendMessage(m)
+}
+
 /***********************************  2.tick function  *****************************************/
 
 // tick advances the internal logical clock by a single tick.
@@ -346,6 +359,10 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateLeader:
 		r.tickHeartbeat()
+		if r.leadTransferee != None {
+			r.leaderTransferElapsed++
+			// If timeout, stop transfer
+		}
 	case StateFollower, StateCandidate:
 		r.tickElection()
 	}
@@ -491,6 +508,19 @@ func (r *Raft) stepFollower(m pb.Message) {
 		{
 			r.handleRequestVote(m)
 		}
+	// Timeout now request
+	case pb.MessageType_MsgTimeoutNow:
+		{
+			r.handleTimeoutNowRequest(m)
+		}
+	// Leader transfer, send to leader
+	case pb.MessageType_MsgTransferLeader:
+		{
+			if r.Lead != None {
+				m.To = r.Lead
+				r.sendMessage(m)
+			}
+		}
 	}
 }
 
@@ -529,6 +559,11 @@ func (r *Raft) stepCandidate(m pb.Message) {
 	case pb.MessageType_MsgSnapshot:
 		{
 			r.handleSnapshot(m)
+		}
+	// Timeout now request
+	case pb.MessageType_MsgTimeoutNow:
+		{
+			r.handleTimeoutNowRequest(m)
 		}
 	}
 }
@@ -571,6 +606,11 @@ func (r *Raft) stepLeader(m pb.Message) {
 	case pb.MessageType_MsgSnapshot:
 		{
 			r.handleSnapshot(m)
+		}
+	// Transfer leader
+	case pb.MessageType_MsgTransferLeader:
+		{
+			r.handleTransferLeader(m)
 		}
 	}
 }
@@ -656,6 +696,11 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 
 // handlePropose handle propose RPC request
 func (r *Raft) handlePropose(m pb.Message) {
+	// If exist leadTransferee, reject propose
+	if r.leadTransferee != None {
+		return
+	}
+
 	entries := m.Entries
 	// 1.append to locals
 	r.RaftLog.appendEntriesWithTerm(entries, r.Term)
@@ -744,6 +789,14 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 
 	// 3.boost commitIndex
 	r.boostCommitIndexAndBroadCast()
+
+	// 4.if leadTransferee == from, and log is matched
+	if r.leadTransferee == m.From {
+		if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+			r.sendTimeoutNowRequest(m.From, r.Term)
+			r.leadTransferee = None
+		}
+	}
 }
 
 func (r *Raft) boostCommitIndexAndBroadCast() {
@@ -818,6 +871,39 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
 }
 
+// handleTransferLeader transfer leadership to target server
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	targetId := m.From
+	_, existed := r.Prs[targetId]
+	if !existed {
+		return
+	}
+	if m.From == r.id {
+		return
+	}
+
+	r.leadTransferee = targetId
+	// If up to date, send TimeoutNow request
+	if r.Prs[targetId].Match == r.RaftLog.LastIndex() {
+		r.sendTimeoutNowRequest(targetId, r.Term)
+	} else {
+		// Append log to follower, wait catch up
+		r.leaderTransferElapsed = 0
+		r.sendAppend(targetId)
+	}
+}
+
+// handleTimeoutNowRequest transfer leadership to self, start new election immediately
+func (r *Raft) handleTimeoutNowRequest(m pb.Message) {
+	_, existed := r.Prs[r.id]
+	if !existed {
+		return
+	}
+
+	// Start new election
+	r.handleCampaign()
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
@@ -831,6 +917,8 @@ func (r *Raft) removeNode(id uint64) {
 func (r *Raft) resetNode() {
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
+	r.leaderTransferElapsed = 0
+	r.leadTransferee = None
 	r.votes = make(map[uint64]bool, 0)
 	r.Vote = None
 	r.Lead = None
