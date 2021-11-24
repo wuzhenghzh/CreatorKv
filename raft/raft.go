@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 )
@@ -220,12 +219,20 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	nextIndex := r.Prs[to].Next
-	preLogIndex := nextIndex - 1
+	var preLogIndex uint64
+	if nextIndex > 0 {
+		preLogIndex = nextIndex - 1
+	} else {
+		preLogIndex = 0
+	}
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
-		return r.sendSnapshot(to)
+		if err == ErrCompacted {
+			r.sendSnapshot(to)
+			return false
+		}
+		panic(err)
 	}
-
 	entries := r.RaftLog.getEntriesFromIndex(nextIndex)
 	r.sendMessage(pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
@@ -267,7 +274,6 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	// Your Code Here (2A).
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		log.Errorf("Fail to send snapshot to server : %d , error when create snapshot : %s", to, err.Error())
 		return false
 	}
 	snapshotRequest := pb.Message{
@@ -278,7 +284,7 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 		Snapshot: &snapshot,
 	}
 	r.sendMessage(snapshotRequest)
-	r.Prs[to].Next = snapshot.GetMetadata().GetIndex() + 1
+	r.Prs[to].Next = snapshot.Metadata.Index + 1
 	return true
 }
 
@@ -350,6 +356,7 @@ func (r *Raft) sendTimeoutNowRequest(to uint64, term uint64) {
 		Term:    term,
 	}
 	r.sendMessage(m)
+	r.becomeFollower(r.Term, to)
 }
 
 /***********************************  2.tick function  *****************************************/
@@ -445,7 +452,7 @@ func (r *Raft) becomeLeader() {
 		Term:      r.Term,
 		Index:     r.RaftLog.LastIndex() + 1,
 	}
-	r.RaftLog.appendEntries([]*pb.Entry{noopLog}, &r.PendingConfIndex)
+	r.RaftLog.appendEntries([]*pb.Entry{noopLog})
 	r.broadcast()
 
 	// Update self progress
@@ -756,7 +763,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 			}
 		} else {
-			r.RaftLog.appendEntries(m.Entries[i:], &r.PendingConfIndex)
+			r.RaftLog.appendEntries(m.Entries[i:])
 			break
 		}
 	}
@@ -768,7 +775,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	// 5.send resp
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
-
 }
 
 // handleAppendResponse handle AppendEntry response
@@ -776,7 +782,9 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	// 1. reject, retry
 	reject := m.Reject
 	if reject {
-		r.Prs[m.From].Next--
+		if r.Prs[m.From].Next > 0 {
+			r.Prs[m.From].Next--
+		}
 		r.sendAppend(m.From)
 		return
 	}
@@ -793,7 +801,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 
 	// 4.if leadTransferee == from, and log is matched
 	if r.leadTransferee == m.From {
-		if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		if r.Prs[m.From].Match >= r.RaftLog.LastIndex() {
 			r.sendTimeoutNowRequest(m.From, r.Term)
 			r.leadTransferee = None
 		}
@@ -831,6 +839,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		r.sendHeartbeatResponse(m.From)
 		return
 	}
+
 	// If term is upper then local, become follower
 	if m.Term > r.Term {
 		r.becomeFollower(m.Term, m.From)
@@ -848,8 +857,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
-	lastIndex, lastTerm := m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term
-	if lastTerm < r.Term || lastIndex <= r.RaftLog.committed {
+	lastIndex := m.Snapshot.Metadata.Index
+	if lastIndex <= r.RaftLog.committed {
 		r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), true)
 		return
 	}
@@ -859,17 +868,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.RaftLog.pendingSnapshot = m.Snapshot
 	r.RaftLog.entries = []pb.Entry{}
 	// Conf nodes
-	conf := m.Snapshot.Metadata.ConfState
-	if conf != nil && len(conf.Nodes) > 0 {
-		for _, node := range conf.Nodes {
-			_, existed := r.Prs[node]
-			if !existed {
-				r.Prs[node] = &Progress{
-					Match: 0,
-					Next:  r.RaftLog.LastIndex() + 1,
-				}
-			}
-		}
+	r.Prs = make(map[uint64]*Progress)
+	for _, peer := range m.Snapshot.Metadata.ConfState.Nodes {
+		r.Prs[peer] = &Progress{}
 	}
 
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
@@ -888,7 +889,7 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 
 	r.leadTransferee = targetId
 	// If up to date, send TimeoutNow request
-	if r.Prs[targetId].Match == r.RaftLog.LastIndex() {
+	if r.Prs[targetId].Match >= r.RaftLog.LastIndex() {
 		r.sendTimeoutNowRequest(targetId, r.Term)
 	} else {
 		// Append log to follower, wait catch up

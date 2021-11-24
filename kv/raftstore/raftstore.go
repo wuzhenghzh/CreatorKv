@@ -84,6 +84,24 @@ func (m *storeMeta) getOverlapRegions(region *metapb.Region) []*metapb.Region {
 	return overlaps
 }
 
+func (m *storeMeta) changeRegionPeer(region *metapb.Region, peer *metapb.Peer, isAddPeer bool) {
+	region.RegionEpoch.ConfVer++
+	if isAddPeer {
+		region.Peers = append(region.Peers, peer)
+	} else {
+		for index, p := range region.Peers {
+			if p.Id == peer.Id {
+				region.Peers = append(region.Peers[:index], region.Peers[index+1:]...)
+				break
+			}
+		}
+	}
+	m.Lock()
+	defer m.Unlock()
+	m.regions[region.Id] = region
+	m.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+}
+
 func (m *storeMeta) replaceRegion(preRegion, curRegion *metapb.Region) {
 	m.Lock()
 	m.regions[curRegion.Id] = curRegion
