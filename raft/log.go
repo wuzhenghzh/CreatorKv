@@ -151,6 +151,10 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	return result
 }
 
+func (l *RaftLog) FirstIndex() uint64 {
+	return l.firstLogIndex
+}
+
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
@@ -191,11 +195,7 @@ func (l *RaftLog) LastTerm() uint64 {
 func (l *RaftLog) appendEntries(entries []*pb.Entry, pendingConfIndex *uint64) {
 	for _, entry := range entries {
 		if entry.EntryType == pb.EntryType_EntryConfChange {
-			if *pendingConfIndex == None {
-				*pendingConfIndex = entry.Index
-			} else {
-				continue
-			}
+			*pendingConfIndex = entry.Index
 		}
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,
@@ -210,11 +210,7 @@ func (l *RaftLog) appendEntries(entries []*pb.Entry, pendingConfIndex *uint64) {
 func (l *RaftLog) appendEntriesWithTerm(entries []*pb.Entry, term uint64, pendingConfIndex *uint64) {
 	for _, entry := range entries {
 		if entry.EntryType == pb.EntryType_EntryConfChange {
-			if *pendingConfIndex == None {
-				*pendingConfIndex = entry.Index
-			} else {
-				continue
-			}
+			*pendingConfIndex = entry.Index
 		}
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,

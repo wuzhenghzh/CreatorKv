@@ -801,6 +801,9 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 }
 
 func (r *Raft) boostCommitIndexAndBroadCast() {
+	if r.State != StateLeader {
+		return
+	}
 	maxCommitIndex := r.RaftLog.committed
 	for i := r.RaftLog.committed + 1; i <= r.RaftLog.LastIndex(); i++ {
 		cnt := 0
@@ -913,9 +916,8 @@ func (r *Raft) addNode(id uint64) {
 	if !existed {
 		r.Prs[id] = &Progress{
 			Match: 0,
-			Next:  r.RaftLog.LastIndex() + 1,
+			Next:  1,
 		}
-		r.sendAppend(id)
 	}
 }
 
