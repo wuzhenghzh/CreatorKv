@@ -249,8 +249,89 @@ func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, ent
 		{
 			d.handleChangePeerRequest(entry, request.ChangePeer, kvWB)
 		}
+	// Split region
+	case raft_cmdpb.AdminCmdType_Split:
+		{
+			d.handleSplitRegion(entry, request.Split, kvWB)
+		}
 	}
 	return kvWB
+}
+
+// handleSplitRegion Split the region into two regions
+func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.SplitRequest, kvWB *engine_util.WriteBatch) {
+	originRegion := d.Region()
+
+	// 0. Pre check
+	err := util.CheckKeyInRegion(req.SplitKey, originRegion)
+	if err != nil {
+		pr, _ := d.getProposal(entry.Index, entry.Term)
+		if pr != nil {
+			pr.cb.Done(ErrResp(err))
+		}
+		return
+	}
+
+	// 1. Update region range, epoch
+	endKey := originRegion.EndKey
+	originRegion.RegionEpoch.ConfVer++
+	originRegion.EndKey = req.SplitKey
+
+	// 2. Create new peer and new region
+	var neewPeers []*metapb.Peer
+	newPeerIds := req.NewPeerIds
+
+	// newRegion / oldRegion were stored in the same stores
+	for i, p := range originRegion.Peers {
+		neewPeers = append(neewPeers, &metapb.Peer{
+			Id:      newPeerIds[i],
+			StoreId: p.StoreId,
+		})
+	}
+
+	newRegion := &metapb.Region{
+		Id:       req.NewRegionId,
+		StartKey: req.SplitKey,
+		EndKey:   endKey,
+		RegionEpoch: &metapb.RegionEpoch{
+			ConfVer: 1,
+			Version: 1,
+		},
+		Peers: neewPeers,
+	}
+
+	// 3. Update global meta
+	storeMeta := d.ctx.storeMeta
+	storeMeta.Lock()
+	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: originRegion})
+	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+	storeMeta.regions[newRegion.Id] = newRegion
+	storeMeta.regions[originRegion.Id] = originRegion
+	storeMeta.Unlock()
+
+	// 4. Write region state
+	meta.WriteRegionState(kvWB, originRegion, rspb.PeerState_Normal)
+	meta.WriteRegionState(kvWB, newRegion, rspb.PeerState_Normal)
+
+	// 5. Create,  register， start peer
+	peer, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
+	d.ctx.router.register(peer)
+	d.ctx.router.send(newRegion.Id, message.Msg{
+		Type: message.MsgTypeStart,
+	})
+
+	// 6. Send response
+	pr, _ := d.getProposal(entry.Index, entry.Term)
+	if pr != nil {
+		resp := newCmdResp()
+		resp.AdminResponse = &raft_cmdpb.AdminResponse{
+			CmdType: raft_cmdpb.AdminCmdType_Split,
+			Split: &raft_cmdpb.SplitResponse{
+				Regions: []*metapb.Region{originRegion, newRegion},
+			},
+		}
+		pr.cb.Done(resp)
+	}
 }
 
 // handleCompactLogRequest update truncated state, schedule gc task to raftLog-gc worker
@@ -270,6 +351,7 @@ func (d *peerMsgHandler) handleCompactLogRequest(req *raft_cmdpb.CompactLogReque
 	}
 }
 
+// handleChangePeerRequest change region's peer(add/remove)
 func (d *peerMsgHandler) handleChangePeerRequest(entry eraftpb.Entry, req *raft_cmdpb.ChangePeerRequest, kvWB *engine_util.WriteBatch) {
 	peer := req.Peer
 	peerId := peer.Id
@@ -497,6 +579,10 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 				log.Errorf("Error when propose conf change request : %s", err.Error())
 				return
 			}
+		}
+	case raft_cmdpb.AdminCmdType_Split:
+		{
+			d.proposeDataRequest(msg, cb)
 		}
 	}
 }
