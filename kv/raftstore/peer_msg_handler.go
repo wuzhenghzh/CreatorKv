@@ -122,17 +122,12 @@ func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry, kvWB *engine_u
 
 	// Apply data request
 	if len(msg.Requests) > 0 {
-		return d.applyDataRequest(msg.Requests[0], entry, kvWB)
+		return d.applyDataRequest(msg, entry, kvWB)
 	}
 
 	// Apply admin request
 	if msg.AdminRequest != nil {
-		err = util.CheckRegionEpoch(&msg, d.Region(), true)
-		if err != nil {
-			pr, _ := d.getProposal(entry.Index, entry.Term)
-			if pr != nil {
-				pr.cb.Done(ErrResp(err))
-			}
+		if err := d.checkRegionEpoch(msg, entry); err != nil {
 			return kvWB
 		}
 		return d.applyAdminRequest(msg.AdminRequest, entry, kvWB)
@@ -140,31 +135,21 @@ func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry, kvWB *engine_u
 	return kvWB
 }
 
-func (d *peerMsgHandler) unMarshalRequest(entry eraftpb.Entry) (raft_cmdpb.RaftCmdRequest, error) {
-	msg := raft_cmdpb.RaftCmdRequest{}
-	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
-		cc := eraftpb.ConfChange{}
-		err := cc.Unmarshal(entry.Data)
-		if err != nil {
-			log.Errorf("Error when decode conf change msg: %s", err.Error())
-			return msg, errors.Trace(err)
-		}
-		err = msg.Unmarshal(cc.Context)
-		if err != nil {
-			log.Errorf("Error when decode raft cmd msg: %s", err.Error())
-			return msg, errors.Trace(err)
-		}
-	} else {
-		err := msg.Unmarshal(entry.Data)
-		if err != nil {
-			log.Errorf("Error when decode raft cmd msg: %s", err.Error())
-			return msg, errors.Trace(err)
+func (d *peerMsgHandler) applyDataRequest(msg raft_cmdpb.RaftCmdRequest, entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+	request := msg.Requests[0]
+
+	// Check key in region's range
+	key := parseRequestKey(request)
+	if key != nil {
+		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+			pr, _ := d.getProposal(entry.Index, entry.Term)
+			if pr != nil {
+				pr.cb.Done(ErrResp(err))
+			}
+			return kvWB
 		}
 	}
-	return msg, nil
-}
 
-func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	// Apply modified changes
 	switch request.GetCmdType() {
 	case raft_cmdpb.CmdType_Put:
@@ -222,6 +207,12 @@ func (d *peerMsgHandler) applyDataRequest(request *raft_cmdpb.Request, entry era
 	// Apply scan
 	case raft_cmdpb.CmdType_Snap:
 		{
+			// Attention : Check region epoch first!!!!!!!!!!!  it's a bug here
+			if d.Region().RegionEpoch.Version != msg.Header.RegionEpoch.Version {
+				pr.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
+				return kvWB
+			}
+
 			pr.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Snap,
@@ -272,37 +263,35 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 		return
 	}
 
-	// 1. Update region range, epoch
-	endKey := originRegion.EndKey
-	originRegion.RegionEpoch.ConfVer++
-	originRegion.EndKey = req.SplitKey
+	storeMeta := d.ctx.storeMeta
+	storeMeta.Lock()
+	storeMeta.regionRanges.Delete(&regionItem{region: originRegion})
 
-	// 2. Create new peer and new region
-	var neewPeers []*metapb.Peer
+	// 1. Update region epoch
+	originRegion.RegionEpoch.Version++
+
+	// 2. Create new region, newRegion / oldRegion were stored in the same stores at the beginning
+	var newPeers []*metapb.Peer
 	newPeerIds := req.NewPeerIds
-
-	// newRegion / oldRegion were stored in the same stores
 	for i, p := range originRegion.Peers {
-		neewPeers = append(neewPeers, &metapb.Peer{
+		newPeers = append(newPeers, &metapb.Peer{
 			Id:      newPeerIds[i],
 			StoreId: p.StoreId,
 		})
 	}
-
 	newRegion := &metapb.Region{
 		Id:       req.NewRegionId,
 		StartKey: req.SplitKey,
-		EndKey:   endKey,
+		EndKey:   originRegion.EndKey,
+		Peers:    newPeers,
 		RegionEpoch: &metapb.RegionEpoch{
 			ConfVer: 1,
 			Version: 1,
 		},
-		Peers: neewPeers,
 	}
+	originRegion.EndKey = req.SplitKey
 
 	// 3. Update global meta
-	storeMeta := d.ctx.storeMeta
-	storeMeta.Lock()
 	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: originRegion})
 	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
 	storeMeta.regions[newRegion.Id] = newRegion
@@ -331,6 +320,10 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 			},
 		}
 		pr.cb.Done(resp)
+	}
+
+	if d.IsLeader() {
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
 }
 
@@ -410,6 +403,42 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry eraftpb.Entry, req *raft_
 	if d.IsLeader() {
 		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
+}
+
+func (d *peerMsgHandler) checkRegionEpoch(msg raft_cmdpb.RaftCmdRequest, entry eraftpb.Entry) error {
+	err := util.CheckRegionEpoch(&msg, d.Region(), true)
+	if err != nil {
+		pr, _ := d.getProposal(entry.Index, entry.Term)
+		if pr != nil {
+			pr.cb.Done(ErrResp(err))
+		}
+		return err
+	}
+	return nil
+}
+
+func (d *peerMsgHandler) unMarshalRequest(entry eraftpb.Entry) (raft_cmdpb.RaftCmdRequest, error) {
+	msg := raft_cmdpb.RaftCmdRequest{}
+	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
+		cc := eraftpb.ConfChange{}
+		err := cc.Unmarshal(entry.Data)
+		if err != nil {
+			log.Errorf("Error when decode conf change msg: %s", err.Error())
+			return msg, errors.Trace(err)
+		}
+		err = msg.Unmarshal(cc.Context)
+		if err != nil {
+			log.Errorf("Error when decode raft cmd msg: %s", err.Error())
+			return msg, errors.Trace(err)
+		}
+	} else {
+		err := msg.Unmarshal(entry.Data)
+		if err != nil {
+			log.Errorf("Error when decode raft cmd msg: %s", err.Error())
+			return msg, errors.Trace(err)
+		}
+	}
+	return msg, nil
 }
 
 func (d *peerMsgHandler) persistApplyState(kvWB *engine_util.WriteBatch, index uint64) {
@@ -582,6 +611,11 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		}
 	case raft_cmdpb.AdminCmdType_Split:
 		{
+			key := msg.AdminRequest.Split.SplitKey
+			if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
+				cb.Done(ErrResp(err))
+				return
+			}
 			d.proposeDataRequest(msg, cb)
 		}
 	}
@@ -1020,6 +1054,19 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
 		}
 	}
+}
+
+func parseRequestKey(req *raft_cmdpb.Request) []byte {
+	var key []byte
+	switch req.CmdType {
+	case raft_cmdpb.CmdType_Get:
+		key = req.Get.Key
+	case raft_cmdpb.CmdType_Put:
+		key = req.Put.Key
+	case raft_cmdpb.CmdType_Delete:
+		key = req.Delete.Key
+	}
+	return key
 }
 
 func newAdminRequest(regionID uint64, peer *metapb.Peer) *raft_cmdpb.RaftCmdRequest {
