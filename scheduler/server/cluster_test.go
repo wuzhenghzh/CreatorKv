@@ -33,7 +33,9 @@ const (
 	initEpochConfVer uint64 = 1
 )
 
-func Test(t *testing.T) { TestingT(t) }
+func Test(t *testing.T) {
+	TestingT(t)
+}
 
 var _ = Suite(&testClusterInfoSuite{})
 

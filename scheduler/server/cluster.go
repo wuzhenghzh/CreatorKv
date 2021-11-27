@@ -287,16 +287,17 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	if originRegionInfo != nil {
 		// Check stale
 		if c.checkRegionEpochStale(originRegionInfo.GetRegionEpoch(), region.GetRegionEpoch()) {
-			return errors.New("Region info is stale")
+			return ErrRegionIsStale(region.GetMeta(), originRegionInfo.GetMeta())
 		}
 		if !c.checkRegionInfoShouldUpdate(originRegionInfo, region) {
 			return nil
 		}
 	} else {
-		overlapRegions := c.core.ScanRange(region.GetStartKey(), region.GetEndKey(), 0)
+		// Check overlap regions
+		overlapRegions := c.core.ScanRange(region.GetStartKey(), region.GetEndKey(), -1)
 		for _, lapRegion := range overlapRegions {
 			if c.checkRegionEpochStale(lapRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
-				return errors.New("The new regionInfo is stale")
+				return ErrRegionIsStale(region.GetMeta(), originRegionInfo.GetMeta())
 			}
 		}
 	}
