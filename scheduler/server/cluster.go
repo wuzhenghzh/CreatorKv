@@ -279,8 +279,55 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
-
+	// Check stale
+	originRegionInfo := c.core.GetRegion(region.GetID())
+	if originRegionInfo != nil {
+		// Check
+		if !c.checkRegionInfoShouldUpdate(originRegionInfo, region) {
+			return errors.New("Region info is stale or it's not needed to update region info")
+		}
+	} else {
+		overlapRegions := c.core.ScanRange(region.GetStartKey(), region.GetEndKey(), 0)
+		for _, lapRegion := range overlapRegions {
+			if c.checkRegionEpochStale(lapRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
+				return errors.New("The new regionInfo is stale")
+			}
+		}
+	}
+	// Come here, we can update local cache info now
+	c.core.PutRegion(region)
+	for storeId := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(storeId)
+	}
 	return nil
+}
+
+func (c *RaftCluster) checkRegionInfoShouldUpdate(originRegionInfo, region *core.RegionInfo) bool {
+	if c.checkRegionEpochStale(originRegionInfo.GetRegionEpoch(), region.GetRegionEpoch()) {
+		return false
+	}
+	shouldUpdateRegionInfo := false
+	if originRegionInfo.GetLeader() != region.GetLeader() {
+		shouldUpdateRegionInfo = true
+	}
+	if len(originRegionInfo.GetPendingPeers()) > 0 || len(region.GetPendingPeers()) > 0 {
+		shouldUpdateRegionInfo = true
+	}
+	if originRegionInfo.GetApproximateSize() != region.GetApproximateSize() {
+		shouldUpdateRegionInfo = true
+	}
+	return shouldUpdateRegionInfo
+}
+
+// checkRegionEpoch check whether new newEpoch is stale
+func (c *RaftCluster) checkRegionEpochStale(oldEpoch *metapb.RegionEpoch, newEpoch *metapb.RegionEpoch) bool {
+	if oldEpoch.Version > newEpoch.Version {
+		return true
+	}
+	if oldEpoch.ConfVer > newEpoch.ConfVer {
+		return true
+	}
+	return false
 }
 
 func (c *RaftCluster) updateStoreStatusLocked(id uint64) {
