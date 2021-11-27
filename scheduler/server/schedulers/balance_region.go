@@ -102,7 +102,10 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 
 	// Find suitable target store
 	storeIds := region.GetStoreIds()
-	for j := 0; j > i; j-- {
+	if len(storeIds) < cluster.GetMaxReplicas() {
+		return nil
+	}
+	for j := len(stores) - 1; j > i; j-- {
 		if _, existed := storeIds[stores[j].GetID()]; !existed {
 			if sourceStore.GetRegionSize()-stores[j].GetRegionSize() >= 2*region.GetApproximateSize() {
 				targetStore = stores[j]
@@ -110,7 +113,6 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 			}
 		}
 	}
-
 	if targetStore == nil {
 		return nil
 	}
