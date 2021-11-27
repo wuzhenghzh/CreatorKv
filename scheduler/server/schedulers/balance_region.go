@@ -103,12 +103,11 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 	// Find suitable target store
 	storeIds := region.GetStoreIds()
 	for j := 0; j > i; j-- {
-		targetStore = stores[j]
-		if _, existed := storeIds[targetStore.GetID()]; existed {
-			continue
-		}
-		if sourceStore.GetRegionSize()-targetStore.GetRegionSize() >= 2*region.GetApproximateSize() {
-			break
+		if _, existed := storeIds[stores[j].GetID()]; !existed {
+			if sourceStore.GetRegionSize()-stores[j].GetRegionSize() >= 2*region.GetApproximateSize() {
+				targetStore = stores[j]
+				break
+			}
 		}
 	}
 
@@ -149,6 +148,9 @@ func (s *balanceRegionScheduler) filterSuitableRegion(sourceStore *core.StoreInf
 			region = randRegion
 		}
 	})
+	if region != nil {
+		return region
+	}
 
 	// Try select a follower
 	cluster.GetFollowersWithLock(sourceStore.GetID(), func(container core.RegionsContainer) {
@@ -157,6 +159,9 @@ func (s *balanceRegionScheduler) filterSuitableRegion(sourceStore *core.StoreInf
 			region = randRegion
 		}
 	})
+	if region != nil {
+		return region
+	}
 
 	// Try select a leader
 	cluster.GetLeadersWithLock(sourceStore.GetID(), func(container core.RegionsContainer) {
@@ -165,6 +170,9 @@ func (s *balanceRegionScheduler) filterSuitableRegion(sourceStore *core.StoreInf
 			region = randRegion
 		}
 	})
+	if region != nil {
+		return region
+	}
 
-	return region
+	return nil
 }

@@ -279,12 +279,18 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
+	if region.GetRegionEpoch() == nil {
+		return errors.New("The region epoch is nil")
+	}
 	// Check stale
 	originRegionInfo := c.core.GetRegion(region.GetID())
 	if originRegionInfo != nil {
 		// Check
+		if c.checkRegionEpochStale(originRegionInfo.GetRegionEpoch(), region.GetRegionEpoch()) {
+			return errors.New("Region info is stale")
+		}
 		if !c.checkRegionInfoShouldUpdate(originRegionInfo, region) {
-			return errors.New("Region info is stale or it's not needed to update region info")
+			return nil
 		}
 	} else {
 		overlapRegions := c.core.ScanRange(region.GetStartKey(), region.GetEndKey(), 0)
@@ -303,20 +309,20 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 }
 
 func (c *RaftCluster) checkRegionInfoShouldUpdate(originRegionInfo, region *core.RegionInfo) bool {
-	if c.checkRegionEpochStale(originRegionInfo.GetRegionEpoch(), region.GetRegionEpoch()) {
-		return false
+	if region.GetRegionEpoch().Version > originRegionInfo.GetRegionEpoch().Version ||
+		region.GetRegionEpoch().ConfVer > originRegionInfo.GetRegionEpoch().GetConfVer() {
+		return true
 	}
-	shouldUpdateRegionInfo := false
 	if originRegionInfo.GetLeader() != region.GetLeader() {
-		shouldUpdateRegionInfo = true
+		return true
 	}
 	if len(originRegionInfo.GetPendingPeers()) > 0 || len(region.GetPendingPeers()) > 0 {
-		shouldUpdateRegionInfo = true
+		return true
 	}
 	if originRegionInfo.GetApproximateSize() != region.GetApproximateSize() {
-		shouldUpdateRegionInfo = true
+		return true
 	}
-	return shouldUpdateRegionInfo
+	return false
 }
 
 // checkRegionEpoch check whether new newEpoch is stale
