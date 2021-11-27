@@ -282,10 +282,10 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	if region.GetRegionEpoch() == nil {
 		return errors.New("The region epoch is nil")
 	}
-	// Check stale
+
 	originRegionInfo := c.core.GetRegion(region.GetID())
 	if originRegionInfo != nil {
-		// Check
+		// Check stale
 		if c.checkRegionEpochStale(originRegionInfo.GetRegionEpoch(), region.GetRegionEpoch()) {
 			return errors.New("Region info is stale")
 		}

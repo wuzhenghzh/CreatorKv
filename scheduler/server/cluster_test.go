@@ -25,12 +25,15 @@ import (
 	. "github.com/pingcap/check"
 	"math/rand"
 	"sync"
+	"testing"
 )
 
 const (
 	initEpochVersion uint64 = 1
 	initEpochConfVer uint64 = 1
 )
+
+func Test(t *testing.T) { TestingT(t) }
 
 var _ = Suite(&testClusterInfoSuite{})
 
