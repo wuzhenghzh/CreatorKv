@@ -73,7 +73,7 @@ func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcp
 		}
 		return resp, err
 	}
-	if lock != nil {
+	if lock != nil && lock.Ts <= req.Version {
 		return &kvrpcpb.GetResponse{Error: &kvrpcpb.KeyError{
 			Locked: &kvrpcpb.LockInfo{
 				PrimaryLock: lock.Primary,
@@ -133,6 +133,19 @@ func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest
 	var keyErrors []*kvrpcpb.KeyError
 	for _, mutation := range mutations {
 		key := mutation.Key
+		// Check that another transaction has not locked or written to the same key.
+		write, commitTs, _ := txn.MostRecentWrite(key)
+		if write != nil && req.StartVersion < commitTs {
+			keyErrors = append(keyErrors, &kvrpcpb.KeyError{
+				Conflict: &kvrpcpb.WriteConflict{
+					StartTs:    req.StartVersion,
+					Key:        key,
+					Primary:    req.PrimaryLock,
+					ConflictTs: commitTs,
+				},
+			})
+			continue
+		}
 		if lock, _ := txn.GetLock(key); lock != nil && lock.Ts != req.StartVersion {
 			keyErrors = append(keyErrors, &kvrpcpb.KeyError{
 				Conflict: &kvrpcpb.WriteConflict{
@@ -144,22 +157,20 @@ func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest
 			})
 			continue
 		}
+
 		op := mutation.Op
-		var kind mvcc.WriteKind
-		switch op {
-		case kvrpcpb.Op_Put:
-			txn.PutValue(key, mutation.Value)
-			kind = mvcc.WriteKindPut
-		case kvrpcpb.Op_Del:
-			txn.DeleteValue(key)
-			kind = mvcc.WriteKindDelete
-		}
 		txn.PutLock(key, &mvcc.Lock{
 			Primary: req.PrimaryLock,
 			Ts:      req.StartVersion,
 			Ttl:     req.LockTtl,
-			Kind:    kind,
+			Kind:    mvcc.WriteKind(op + 1),
 		})
+		switch op {
+		case kvrpcpb.Op_Put:
+			txn.PutValue(key, mutation.Value)
+		case kvrpcpb.Op_Del:
+			txn.DeleteValue(key)
+		}
 	}
 	err = server.storage.Write(req.Context, txn.Writes())
 	if err != nil {
@@ -209,7 +220,10 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 			}
 			return nil, err
 		}
-		if lock == nil || lock.Ts != req.StartVersion {
+		if lock == nil {
+			return resp, nil
+		}
+		if lock.Ts != req.StartVersion {
 			return &kvrpcpb.CommitResponse{Error: &kvrpcpb.KeyError{
 				Retryable: "true",
 			}}, nil

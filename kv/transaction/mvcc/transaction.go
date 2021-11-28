@@ -154,6 +154,7 @@ func (txn *MvccTxn) DeleteValue(key []byte) {
 func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	defer iter.Close()
 	for iter.Seek(key); iter.Valid(); iter.Next() {
 		item := iter.Item()
 		writeData, err := item.Value()
@@ -184,6 +185,7 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	defer iter.Close()
 	for iter.Seek(key); iter.Valid(); iter.Next() {
 		item := iter.Item()
 		writeData, err := item.Value()
