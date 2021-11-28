@@ -61,7 +61,7 @@ func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcp
 	key := req.Key
 	lock, err := txn.GetLock(key)
 	if err != nil {
-		return resp, err
+		return nil, err
 	}
 	if lock != nil && lock.Ts <= req.Version {
 		return &kvrpcpb.GetResponse{Error: &kvrpcpb.KeyError{
@@ -198,12 +198,85 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*
 
 func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	reader, txn, err := server.getReader(req.Version, req.Context)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	scanner := mvcc.NewScanner(req.StartKey, txn)
+	defer scanner.Close()
+
+	var pairs []*kvrpcpb.KvPair
+	for i := 0; i < int(req.Limit); i++ {
+		key, value, err := scanner.Next()
+		if err != nil {
+			continue
+		}
+		if key == nil || value == nil {
+			break
+		}
+		pairs = append(pairs, &kvrpcpb.KvPair{
+			Key:   key,
+			Value: value,
+		})
+	}
+	return &kvrpcpb.ScanResponse{
+		Pairs: pairs,
+	}, nil
 }
 
 func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.CheckTxnStatusResponse{}
+	startTs := req.LockTs
+	key := req.PrimaryKey
+
+	reader, txn, err := server.getReader(startTs, req.Context)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	// Check whether this txn has benn committed or rollBack
+	w, commitTs, err := txn.CurrentWrite(key)
+	if err != nil {
+		return nil, err
+	}
+	if w != nil {
+		if w.Kind != mvcc.WriteKindRollback {
+			resp.CommitVersion = commitTs
+		}
+		return resp, nil
+	}
+
+	// Check lock
+	lock, err := txn.GetLock(req.PrimaryKey)
+	if lock == nil {
+		// If lock is nil, it means we should roll back
+		txn.PutWrite(key, startTs, &mvcc.Write{
+			Kind:    mvcc.WriteKindRollback,
+			StartTS: startTs,
+		})
+		_ = server.storage.Write(req.Context, txn.Writes())
+		resp.Action = kvrpcpb.Action_LockNotExistRollback
+		return resp, nil
+	}
+
+	// Check lock ttl
+	if mvcc.PhysicalTime(lock.Ts)+lock.Ttl <= mvcc.PhysicalTime(req.CurrentTs) {
+		txn.DeleteLock(key)
+		txn.DeleteValue(key)
+		txn.PutWrite(key, startTs, &mvcc.Write{
+			Kind:    mvcc.WriteKindRollback,
+			StartTS: startTs,
+		})
+		_ = server.storage.Write(req.Context, txn.Writes())
+		resp.Action = kvrpcpb.Action_TTLExpireRollback
+		return resp, nil
+	}
+	resp.Action = kvrpcpb.Action_NoAction
+	return resp, nil
 }
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
