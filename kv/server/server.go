@@ -281,12 +281,92 @@ func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnS
 
 func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.BatchRollbackResponse{}
+	startTs := req.StartVersion
+	keys := req.Keys
+
+	reader, txn, err := server.getReader(startTs, req.Context)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	server.Latches.WaitForLatches(keys)
+	defer server.Latches.ReleaseLatches(keys)
+
+	// Check if the transaction has already been committed or rollBack
+	for _, key := range keys {
+		w, _, err := txn.CurrentWrite(key)
+		if err != nil {
+			continue
+		}
+		if w != nil {
+			if w.Kind != mvcc.WriteKindRollback {
+				resp.Error = &kvrpcpb.KeyError{
+					Abort: "The key is committed, Just abort Key",
+				}
+				return resp, nil
+			}
+			continue
+		}
+
+		// Check lock and remove keys and values
+		lock, err := txn.GetLock(key)
+		if err != nil {
+			continue
+		}
+		if lock == nil || lock.Ts != startTs {
+			txn.PutWrite(key, startTs, &mvcc.Write{
+				StartTS: startTs,
+				Kind:    mvcc.WriteKindRollback,
+			})
+			continue
+		}
+		txn.DeleteLock(key)
+		txn.DeleteValue(key)
+		// Put a rollback indicator as a write.
+		txn.PutWrite(key, startTs, &mvcc.Write{
+			StartTS: startTs,
+			Kind:    mvcc.WriteKindRollback,
+		})
+	}
+	_ = server.storage.Write(req.Context, txn.Writes())
+	return resp, nil
 }
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
 	// Your Code Here (4C).
-	return nil, nil
+	resp := &kvrpcpb.ResolveLockResponse{}
+	startTs := req.StartVersion
+
+	reader, txn, err := server.getReader(startTs, req.Context)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	keys := txn.GetLocksByLockTs(startTs)
+	// Roll back
+	if req.CommitVersion == 0 {
+		for _, key := range keys {
+			txn.DeleteLock(key)
+			txn.DeleteValue(key)
+			// Put a rollback indicator as a write.
+			txn.PutWrite(key, startTs, &mvcc.Write{
+				StartTS: startTs,
+				Kind:    mvcc.WriteKindRollback,
+			})
+		}
+	} else {
+		for _, key := range keys {
+			txn.DeleteLock(key)
+			txn.PutWrite(key, req.CommitVersion, &mvcc.Write{
+				Kind:    mvcc.WriteKindPut,
+				StartTS: startTs,
+			})
+		}
+	}
+	_ = server.storage.Write(req.Context, txn.Writes())
+	return resp, nil
 }
 
 func (server *Server) getReader(startTs uint64, ctx *kvrpcpb.Context) (storage.StorageReader, *mvcc.MvccTxn, error) {

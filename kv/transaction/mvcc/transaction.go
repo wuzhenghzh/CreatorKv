@@ -207,6 +207,23 @@ func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	return nil, 0, nil
 }
 
+// getLocksByLockTs Find all lock by the lockTs
+func (txn *MvccTxn) GetLocksByLockTs(ts uint64) [][]byte {
+	iter := txn.Reader.IterCF(engine_util.CfLock)
+	defer iter.Close()
+
+	var keys [][]byte
+	for ; iter.Valid(); iter.Next() {
+		item := iter.Item()
+		value, _ := item.Value()
+		lock, _ := ParseLock(value)
+		if lock != nil && lock.Ts == ts {
+			keys = append(keys, item.Key())
+		}
+	}
+	return keys
+}
+
 // EncodeKey encodes a user key and appends an encoded timestamp to a key. Keys and timestamps are encoded so that
 // timestamped keys are sorted first by key (ascending), then by timestamp (descending). The encoding is based on
 // https://github.com/facebook/mysql-5.6/wiki/MyRocks-record-format#memcomparable-format.
