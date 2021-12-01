@@ -38,7 +38,7 @@ state 这个 figure 告诉我们在 raft 里面哪些数据需要持久化存储
 - nextIndex: 下一条要发送的日志索引点
 - matchIndex: 已经完全匹配的日志索引点
 
-这两个指针不要持久化存储, 只需要分别初始化成 0 和 1, 通过 raft 的日志传输和一致性检查, 就可以自动恢复了
+这两个指针不要持久化存储, 只需要分别初始化成 lastIndex + 1 和 0, 通过 raft 的日志传输和一致性检查, 就可以自动恢复了
 
 <img src="https://gitee.com/zisuu/mypicture/raw/master/image-20211130144603832.png" alt="image-20211130144603832" style="zoom: 67%;" />
 
