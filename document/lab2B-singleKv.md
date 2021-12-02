@@ -39,27 +39,29 @@ xxxxxxxxxxxxxxxx
 
 
 - Raft Store: 主要是创建和启动了一系列的 worker, 包括:
-    - raftLogGCWorker : 负责 region log 的 compact (压缩)
-    - splitCheckerWorker: 负责检测是否需要 split region
-    - schedulerWorker: 负责和 tinyScheduler 交互的 worker
-    - regionWorker: 负责快照相关的任务, 包括 create/apply snapshot 等
+  - raftLogGCWorker : 负责 region log 的 compact (压缩)
+  - splitCheckerWorker: 负责检测是否需要 split region
+  - schedulerWorker: 负责和 tinyScheduler 交互的 worker
+  - regionWorker: 负责快照相关的任务, 包括 create/apply snapshot 等
+- TickDriver: 定时器的作用, 定时发送 tick 指令, 通过 router 发送给 peer_msg_handle, 做一些定时任务:
+  - check split: 检测是否需要 split region
+  - region heartbeat: 定时发送 region heartbeat
+  - raft tick: 触发 raft.tick()
+  - raft log gc: 定时 compact raft log.
 
-- TickDriver: 可以任务是定时器的作用, 定时触发一些 heartbeat 等任务, 发送给 route
-- Route: 包含 peerSender 和 storeSender (这两都是 chan类型)
-    - peerSender 被 raftWorker 所持有
-    - storeSender 被 storeWorker 所持有
-    - 很显然, 上层可以将数据发送给 route, route 再转发给 peerSender / storeSender, Route 故名思意就是路由的作用
+- Router: 包含 peerSender 和 storeSender (这两都是 chan类型)
+  - peerSender 被 raftWorker 所持有
+  - storeSender 被 storeWorker 所持有
+  - 很显然, 上层可以将数据发送给 route, route 再转发给 peerSender / storeSender, Route 故名思意就是路由的作用
 - RaftWorker : 接收来自 peerSender 的消息, 将消息转发到特定 region 的 PeerMsgHandler 中处理, 也即根据消息中的 regionId 进行转发, 从而实现初版的 Multi-raft 架构
 - PeerMsgHandler: Peer 的消息处理器, 主要有两个重要函数, 起到承上启下的作用:
-    - HandleMsg() : 接收上层的消息, 处理特定的消息, 如 propose raft cmd, split region 等
-    - HandleRaftReady(): 处理 下层 raft 模块准备就绪的消息(如持久化存储日志, snapshot, 发送消息给其他的 store, 应用日志到状态机等)
-    - 这两个函数都是在 raftWorker 中被调用 (go 经典的 for 循环, 通过 chan 接收消息, 并调度 peerMsgHandler)
-    - 因此 raftWorker 可以算是底层模块的调度器
+  - HandleMsg() : 接收上层的消息, 处理特定的消息, 如 propose raft cmd, split region 等
+  - HandleRaftReady(): 处理 下层 raft 模块准备就绪的消息(如持久化存储日志, snapshot, 发送消息给其他的 store, 应用日志到状态机等)
+  - 这两个函数都是在 raftWorker 中被调用 (go 经典的 for 循环, 通过 chan 接收消息, 并调度 peerMsgHandler)
+  - 因此 raftWorker 可以算是底层模块的调度器
 - Peer: 封装了 raftModule, 包括 raft rawNode (也即 raft 的包装) 和 peerStorage (raft 的持久化存储)
 - RawNode: 这是我们在 project2A 中实现的 raft 模块
 - PeerStorage: 能为 Peer 提供持久化存储的存储层, 基于 badgerdb
-
-
 
 最后, 我们可以以一个客户端发送 propose 请求为例, 串联这个架构图:
 

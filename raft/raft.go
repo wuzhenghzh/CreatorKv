@@ -863,7 +863,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.RaftLog.resetAllIndex(lastIndex)
 	r.RaftLog.pendingSnapshot = m.Snapshot
 	r.RaftLog.entries = []pb.Entry{}
-	// Conf nodes
+	// Peers
 	r.Prs = make(map[uint64]*Progress)
 	for _, peer := range m.Snapshot.Metadata.ConfState.Nodes {
 		r.Prs[peer] = &Progress{}

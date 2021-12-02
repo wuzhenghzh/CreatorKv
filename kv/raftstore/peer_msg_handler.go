@@ -626,15 +626,19 @@ func (d *peerMsgHandler) onTick() {
 		return
 	}
 	d.ticker.tickClock()
+	// Tick raft module
 	if d.ticker.isOnTick(PeerTickRaft) {
 		d.onRaftBaseTick()
 	}
+	// Compact raft log
 	if d.ticker.isOnTick(PeerTickRaftLogGC) {
 		d.onRaftGCLogTick()
 	}
+	// Send region heartbeat to scheduler
 	if d.ticker.isOnTick(PeerTickSchedulerHeartbeat) {
 		d.onSchedulerHeartbeatTick()
 	}
+	// Check split region
 	if d.ticker.isOnTick(PeerTickSplitRegionCheck) {
 		d.onSplitRegionCheckTick()
 	}
