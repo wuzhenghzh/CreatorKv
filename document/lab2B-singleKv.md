@@ -34,7 +34,7 @@ region1 的三个分布分布在 nodeA, nodeB, nodeD, 上, 这三个副本由一
 
 认识了 multi-raft 后, 那么 tinykv 中是怎么体现 multi-raft 的呢? 如下图所示:
 
-xxxxxxxxxxxxxxxx
+<img src="https://gitee.com/zisuu/mypicture/raw/master/image-20211202194641910.png" alt="image-20211202194641910" style="zoom:67%;" />
 
 
 
