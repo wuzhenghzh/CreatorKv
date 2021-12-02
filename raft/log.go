@@ -206,10 +206,12 @@ func (l *RaftLog) appendEntries(entries []*pb.Entry) {
 // appendEntriesWithTerm with target term
 func (l *RaftLog) appendEntriesWithTerm(entries []*pb.Entry, term uint64, pendingConfIndex *uint64) {
 	for _, entry := range entries {
-		if *pendingConfIndex == None {
-			*pendingConfIndex = entry.Index
-		} else {
-			continue
+		if entry.EntryType == pb.EntryType_EntryConfChange {
+			if *pendingConfIndex == None {
+				*pendingConfIndex = entry.Index
+			} else {
+				continue
+			}
 		}
 		l.entries = append(l.entries, pb.Entry{
 			EntryType: entry.EntryType,

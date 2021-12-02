@@ -202,7 +202,7 @@ func newRaft(c *Config) *Raft {
 		} else {
 			raft.Prs[peer] = &Progress{
 				Match: 0,
-				Next:  1,
+				Next:  raft.RaftLog.LastIndex() + 1,
 			}
 		}
 	}
@@ -227,11 +227,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	preLogTerm, err := r.RaftLog.Term(preLogIndex)
 	if err != nil {
-		if err == ErrCompacted {
-			r.sendSnapshot(to)
-			return false
-		}
-		panic(err)
+		r.sendSnapshot(to)
+		return false
 	}
 	entries := r.RaftLog.getEntriesFromIndex(nextIndex)
 	r.sendMessage(pb.Message{
@@ -356,7 +353,6 @@ func (r *Raft) sendTimeoutNowRequest(to uint64, term uint64) {
 		Term:    term,
 	}
 	r.sendMessage(m)
-	r.becomeFollower(r.Term, to)
 }
 
 /***********************************  2.tick function  *****************************************/
@@ -879,8 +875,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // handleTransferLeader transfer leadership to target server
 func (r *Raft) handleTransferLeader(m pb.Message) {
 	targetId := m.From
-	_, existed := r.Prs[targetId]
-	if !existed {
+	if _, existed := r.Prs[targetId]; !existed {
 		return
 	}
 	if m.From == r.id {
