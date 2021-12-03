@@ -251,10 +251,8 @@ func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, ent
 
 // handleSplitRegion Split the region into two regions
 func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.SplitRequest, kvWB *engine_util.WriteBatch) {
-	originRegion := d.Region()
-
 	// 0. Check key was in region
-	err := util.CheckKeyInRegion(req.SplitKey, originRegion)
+	err := util.CheckKeyInRegion(req.SplitKey, d.Region())
 	if err != nil {
 		pr, _ := d.getProposal(entry.Index, entry.Term)
 		if pr != nil {
@@ -263,50 +261,26 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 		return
 	}
 
-	storeMeta := d.ctx.storeMeta
-	storeMeta.Lock()
-	storeMeta.regionRanges.Delete(&regionItem{region: originRegion})
-
 	// 1. Update region epoch
+	originRegion := proto.Clone(d.Region()).(*metapb.Region)
 	originRegion.RegionEpoch.Version++
 
-	// 2. Create new region, newRegion / oldRegion were stored in the same stores at the beginning
-	var newPeers []*metapb.Peer
-	newPeerIds := req.NewPeerIds
-	for i, p := range originRegion.Peers {
-		newPeers = append(newPeers, &metapb.Peer{
-			Id:      newPeerIds[i],
-			StoreId: p.StoreId,
-		})
-	}
-	newRegion := &metapb.Region{
-		Id:       req.NewRegionId,
-		StartKey: req.SplitKey,
-		EndKey:   originRegion.EndKey,
-		Peers:    newPeers,
-		RegionEpoch: &metapb.RegionEpoch{
-			ConfVer: 1,
-			Version: 1,
-		},
-	}
+	// 2. Create new region
+	newRegion := copyRegionInfo(originRegion, req)
 	originRegion.EndKey = req.SplitKey
 
 	// 3. Update global meta
-	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: originRegion})
-	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
-	storeMeta.regions[newRegion.Id] = newRegion
-	storeMeta.Unlock()
+	d.ctx.storeMeta.setRegions(originRegion, newRegion)
+	d.peerStorage.SetRegion(originRegion)
 
 	// 4. Write region state
 	meta.WriteRegionState(kvWB, originRegion, rspb.PeerState_Normal)
 	meta.WriteRegionState(kvWB, newRegion, rspb.PeerState_Normal)
+	d.SizeDiffHint = 0
+	d.ApproximateSize = new(uint64)
 
-	// 5. Create,  register， start peer
-	peer, _ := createPeer(d.storeID(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
-	d.ctx.router.register(peer)
-	d.ctx.router.send(newRegion.Id, message.Msg{
-		Type: message.MsgTypeStart,
-	})
+	// 5. Create new peer
+	d.createNewPeerAndStart(newRegion)
 
 	// 6. Send response
 	pr, _ := d.getProposal(entry.Index, entry.Term)
@@ -321,9 +295,7 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 		pr.cb.Done(resp)
 	}
 
-	if d.IsLeader() {
-		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
-	}
+	d.sendRegionHeartBeat()
 }
 
 // handleCompactLogRequest update truncated state, schedule gc task to raftLog-gc worker
@@ -399,6 +371,20 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry eraftpb.Entry, req *raft_
 		pr.cb.Done(resp)
 	}
 
+	if d.IsLeader() {
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+	}
+}
+
+func (d *peerMsgHandler) createNewPeerAndStart(newRegion *metapb.Region) {
+	peer, _ := createPeer(d.ctx.store.Id, d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
+	d.ctx.router.register(peer)
+	d.ctx.router.send(newRegion.Id, message.Msg{
+		Type: message.MsgTypeStart,
+	})
+}
+
+func (d *peerMsgHandler) sendRegionHeartBeat() {
 	if d.IsLeader() {
 		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
@@ -1057,6 +1043,28 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
 		}
 	}
+}
+
+func copyRegionInfo(originRegion *metapb.Region, req *raft_cmdpb.SplitRequest) *metapb.Region {
+	var newPeers []*metapb.Peer
+	newPeerIds := req.NewPeerIds
+	for i, p := range originRegion.Peers {
+		newPeers = append(newPeers, &metapb.Peer{
+			Id:      newPeerIds[i],
+			StoreId: p.StoreId,
+		})
+	}
+	newRegion := &metapb.Region{
+		Id:       req.NewRegionId,
+		StartKey: req.SplitKey,
+		EndKey:   originRegion.EndKey,
+		Peers:    newPeers,
+		RegionEpoch: &metapb.RegionEpoch{
+			ConfVer: 1,
+			Version: 1,
+		},
+	}
+	return newRegion
 }
 
 func parseRequestKey(req *raft_cmdpb.Request) []byte {

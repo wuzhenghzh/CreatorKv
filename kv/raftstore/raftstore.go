@@ -104,6 +104,7 @@ func (m *storeMeta) changeRegionPeer(region *metapb.Region, peer *metapb.Peer, i
 
 func (m *storeMeta) replaceRegion(preRegion, curRegion *metapb.Region) {
 	m.Lock()
+	defer m.Unlock()
 	m.regions[curRegion.Id] = curRegion
 	m.regionRanges.Delete(&regionItem{
 		region: preRegion,
@@ -111,6 +112,19 @@ func (m *storeMeta) replaceRegion(preRegion, curRegion *metapb.Region) {
 	m.regionRanges.ReplaceOrInsert(&regionItem{
 		region: curRegion,
 	})
+}
+
+func (m *storeMeta) setRegions(regions ...*metapb.Region) {
+	m.Lock()
+	for _, region := range regions {
+		m.regionRanges.Delete(&regionItem{
+			region: region,
+		})
+		m.regions[region.Id] = region
+		m.regionRanges.ReplaceOrInsert(&regionItem{
+			region: region,
+		})
+	}
 	m.Unlock()
 }
 
