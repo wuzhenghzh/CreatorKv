@@ -207,7 +207,7 @@ func (d *peerMsgHandler) applyDataRequest(msg raft_cmdpb.RaftCmdRequest, entry e
 	// Apply scan
 	case raft_cmdpb.CmdType_Snap:
 		{
-			// Attention : Check region epoch first!!!!!!!!!!!  it's a bug here
+			// If the region was split or merge, the region epoch change
 			if d.Region().RegionEpoch.Version != msg.Header.RegionEpoch.Version {
 				pr.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
 				return kvWB
@@ -253,7 +253,7 @@ func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, ent
 func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.SplitRequest, kvWB *engine_util.WriteBatch) {
 	originRegion := d.Region()
 
-	// 0. Pre check
+	// 0. Check key was in region
 	err := util.CheckKeyInRegion(req.SplitKey, originRegion)
 	if err != nil {
 		pr, _ := d.getProposal(entry.Index, entry.Term)
@@ -295,7 +295,6 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: originRegion})
 	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
 	storeMeta.regions[newRegion.Id] = newRegion
-	storeMeta.regions[originRegion.Id] = originRegion
 	storeMeta.Unlock()
 
 	// 4. Write region state

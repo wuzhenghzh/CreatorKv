@@ -55,6 +55,8 @@ func (c *Cluster) Start() {
 	ctx := context.TODO()
 	clusterID := c.schedulerClient.GetClusterID(ctx)
 
+	_ = os.RemoveAll(os.TempDir())
+	_ = os.MkdirAll(os.TempDir(), 0755|os.ModeDir)
 	for storeID := uint64(1); storeID <= uint64(c.count); storeID++ {
 		dbPath, err := ioutil.TempDir("", "test-raftstore")
 		if err != nil {
