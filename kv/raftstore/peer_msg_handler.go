@@ -102,8 +102,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				return
 			}
 		}
-		d.persistApplyState(kvWB, ready.CommittedEntries[len(ready.CommittedEntries)-1].Index)
-		d.writeChangesToKvDB(kvWB)
+		d.applyChangesToBadger(kvWB, ready.CommittedEntries[len(ready.CommittedEntries)-1].Index)
 	}
 
 	// Advance
@@ -157,10 +156,6 @@ func (d *peerMsgHandler) applyDataRequest(msg *raft_cmdpb.RaftCmdRequest, entry 
 		kvWB.DeleteCF(deleteRequest.GetCf(), deleteRequest.GetKey())
 	}
 
-	d.persistApplyState(kvWB, entry.Index)
-	d.writeChangesToKvDB(kvWB)
-	kvWB = new(engine_util.WriteBatch)
-
 	// Get propose
 	pr, _ := d.getProposal(entry.Index, entry.Term)
 	if pr == nil {
@@ -192,6 +187,7 @@ func (d *peerMsgHandler) applyDataRequest(msg *raft_cmdpb.RaftCmdRequest, entry 
 	// Apply get
 	case raft_cmdpb.CmdType_Get:
 		{
+			kvWB = d.applyChangesToBadger(kvWB, entry.Index)
 			getRequest := request.Get
 			data, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, getRequest.Cf, getRequest.Key)
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
@@ -210,6 +206,7 @@ func (d *peerMsgHandler) applyDataRequest(msg *raft_cmdpb.RaftCmdRequest, entry 
 				return kvWB
 			}
 
+			kvWB = d.applyChangesToBadger(kvWB, entry.Index)
 			pr.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
 				CmdType: raft_cmdpb.CmdType_Snap,
@@ -406,18 +403,6 @@ func (d *peerMsgHandler) sendRegionHeartBeat() {
 	}
 }
 
-func (d *peerMsgHandler) checkRegionEpoch(msg raft_cmdpb.RaftCmdRequest, entry eraftpb.Entry) error {
-	err := util.CheckRegionEpoch(&msg, d.Region(), true)
-	if err != nil {
-		pr, _ := d.getProposal(entry.Index, entry.Term)
-		if pr != nil {
-			pr.cb.Done(ErrResp(err))
-		}
-		return err
-	}
-	return nil
-}
-
 func (d *peerMsgHandler) unMarshalRequest(entry eraftpb.Entry) (raft_cmdpb.RaftCmdRequest, error) {
 	msg := raft_cmdpb.RaftCmdRequest{}
 	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
@@ -440,6 +425,12 @@ func (d *peerMsgHandler) unMarshalRequest(entry eraftpb.Entry) (raft_cmdpb.RaftC
 		}
 	}
 	return msg, nil
+}
+
+func (d *peerMsgHandler) applyChangesToBadger(kvWB *engine_util.WriteBatch, index uint64) *engine_util.WriteBatch {
+	d.persistApplyState(kvWB, index)
+	d.writeChangesToKvDB(kvWB)
+	return new(engine_util.WriteBatch)
 }
 
 func (d *peerMsgHandler) persistApplyState(kvWB *engine_util.WriteBatch, index uint64) {
