@@ -114,20 +114,6 @@ func (m *storeMeta) replaceRegion(preRegion, curRegion *metapb.Region) {
 	})
 }
 
-func (m *storeMeta) setRegions(regions ...*metapb.Region) {
-	m.Lock()
-	for _, region := range regions {
-		m.regionRanges.Delete(&regionItem{
-			region: region,
-		})
-		m.regions[region.Id] = region
-		m.regionRanges.ReplaceOrInsert(&regionItem{
-			region: region,
-		})
-	}
-	m.Unlock()
-}
-
 type GlobalContext struct {
 	cfg                  *config.Config
 	engine               *engine_util.Engines

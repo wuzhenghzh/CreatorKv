@@ -122,20 +122,17 @@ func (d *peerMsgHandler) applyCommittedEntry(entry eraftpb.Entry, kvWB *engine_u
 
 	// Apply data request
 	if len(msg.Requests) > 0 {
-		return d.applyDataRequest(msg, entry, kvWB)
+		return d.applyDataRequest(&msg, &entry, kvWB)
 	}
 
 	// Apply admin request
 	if msg.AdminRequest != nil {
-		if err := d.checkRegionEpoch(msg, entry); err != nil {
-			return kvWB
-		}
-		return d.applyAdminRequest(msg.AdminRequest, entry, kvWB)
+		return d.applyAdminRequest(&msg, &entry, kvWB)
 	}
 	return kvWB
 }
 
-func (d *peerMsgHandler) applyDataRequest(msg raft_cmdpb.RaftCmdRequest, entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+func (d *peerMsgHandler) applyDataRequest(msg *raft_cmdpb.RaftCmdRequest, entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
 	request := msg.Requests[0]
 
 	// Check key in region's range
@@ -228,7 +225,8 @@ func (d *peerMsgHandler) applyDataRequest(msg raft_cmdpb.RaftCmdRequest, entry e
 	return kvWB
 }
 
-func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, entry eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+func (d *peerMsgHandler) applyAdminRequest(msg *raft_cmdpb.RaftCmdRequest, entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) *engine_util.WriteBatch {
+	request := msg.AdminRequest
 	switch request.CmdType {
 	// Compact log
 	case raft_cmdpb.AdminCmdType_CompactLog:
@@ -238,21 +236,24 @@ func (d *peerMsgHandler) applyAdminRequest(request *raft_cmdpb.AdminRequest, ent
 	// Change peer
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		{
-			d.handleChangePeerRequest(entry, request.ChangePeer, kvWB)
+			d.handleChangePeerRequest(entry, msg, request.ChangePeer, kvWB)
 		}
 	// Split region
 	case raft_cmdpb.AdminCmdType_Split:
 		{
-			d.handleSplitRegion(entry, request.Split, kvWB)
+			d.handleSplitRegion(entry, msg, request.Split, kvWB)
 		}
 	}
 	return kvWB
 }
 
 // handleSplitRegion Split the region into two regions
-func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.SplitRequest, kvWB *engine_util.WriteBatch) {
-	// 0. Check key was in region
-	err := util.CheckKeyInRegion(req.SplitKey, d.Region())
+func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, req *raft_cmdpb.SplitRequest, kvWB *engine_util.WriteBatch) {
+	// 0.Check region epoch and whether key was in region
+	err := util.CheckRegionEpoch(msg, d.Region(), true)
+	if err == nil {
+		err = util.CheckKeyInRegion(req.SplitKey, d.Region())
+	}
 	if err != nil {
 		pr, _ := d.getProposal(entry.Index, entry.Term)
 		if pr != nil {
@@ -261,17 +262,25 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 		return
 	}
 
-	// 1. Update region epoch
+	// 1. Split region
 	originRegion := proto.Clone(d.Region()).(*metapb.Region)
 	originRegion.RegionEpoch.Version++
-
-	// 2. Create new region
 	newRegion := copyRegionInfo(originRegion, req)
 	originRegion.EndKey = req.SplitKey
 
+	// 2 Create new peer
+	d.createNewPeerAndStart(newRegion)
+
 	// 3. Update global meta
-	d.ctx.storeMeta.setRegions(originRegion, newRegion)
+	m := d.ctx.storeMeta
+	m.Lock()
+	m.regionRanges.Delete(&regionItem{region: d.Region()})
+	m.regions[originRegion.Id] = originRegion
+	m.regions[newRegion.Id] = newRegion
+	m.regionRanges.ReplaceOrInsert(&regionItem{region: originRegion})
+	m.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
 	d.peerStorage.SetRegion(originRegion)
+	m.Unlock()
 
 	// 4. Write region state
 	meta.WriteRegionState(kvWB, originRegion, rspb.PeerState_Normal)
@@ -279,10 +288,7 @@ func (d *peerMsgHandler) handleSplitRegion(entry eraftpb.Entry, req *raft_cmdpb.
 	d.SizeDiffHint = 0
 	d.ApproximateSize = new(uint64)
 
-	// 5. Create new peer
-	d.createNewPeerAndStart(newRegion)
-
-	// 6. Send response
+	// 5. Send response
 	pr, _ := d.getProposal(entry.Index, entry.Term)
 	if pr != nil {
 		resp := newCmdResp()
@@ -316,7 +322,17 @@ func (d *peerMsgHandler) handleCompactLogRequest(req *raft_cmdpb.CompactLogReque
 }
 
 // handleChangePeerRequest change region's peer(add/remove)
-func (d *peerMsgHandler) handleChangePeerRequest(entry eraftpb.Entry, req *raft_cmdpb.ChangePeerRequest, kvWB *engine_util.WriteBatch) {
+func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, req *raft_cmdpb.ChangePeerRequest, kvWB *engine_util.WriteBatch) {
+	// Check region epoch
+	err := util.CheckRegionEpoch(msg, d.Region(), true)
+	if err != nil {
+		pr, _ := d.getProposal(entry.Index, entry.Term)
+		if pr != nil {
+			pr.cb.Done(ErrResp(err))
+		}
+		return
+	}
+
 	peer := req.Peer
 	peerId := peer.Id
 	region := d.Region()
