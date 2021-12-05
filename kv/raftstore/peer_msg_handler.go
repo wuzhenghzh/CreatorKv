@@ -266,7 +266,7 @@ func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb
 	originRegion.EndKey = req.SplitKey
 
 	// 2 Create new peer
-	d.createNewPeerAndStart(newRegion)
+	newPeer := d.createNewPeerAndStart(newRegion)
 
 	// 3. Update global meta
 	m := d.ctx.storeMeta
@@ -298,7 +298,11 @@ func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb
 		pr.cb.Done(resp)
 	}
 
-	d.sendRegionHeartBeat()
+	// 6. Send region heartbeat to scheduler
+	if d.IsLeader() {
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+	}
+	newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 }
 
 // handleCompactLogRequest update truncated state, schedule gc task to raftLog-gc worker
@@ -389,12 +393,13 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 	}
 }
 
-func (d *peerMsgHandler) createNewPeerAndStart(newRegion *metapb.Region) {
+func (d *peerMsgHandler) createNewPeerAndStart(newRegion *metapb.Region) *peer {
 	peer, _ := createPeer(d.ctx.store.Id, d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
 	d.ctx.router.register(peer)
 	d.ctx.router.send(newRegion.Id, message.Msg{
 		Type: message.MsgTypeStart,
 	})
+	return peer
 }
 
 func (d *peerMsgHandler) sendRegionHeartBeat() {
