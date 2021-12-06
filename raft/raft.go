@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 )
@@ -182,6 +183,7 @@ func newRaft(c *Config) *Raft {
 		votes:            map[uint64]bool{},
 		Prs:              map[uint64]*Progress{},
 		RaftLog:          newLog(c.Storage),
+		State:            StateFollower,
 	}
 
 	if raft.Term == 0 {
@@ -342,6 +344,7 @@ func (r *Raft) sendRequestVoteResponse(to uint64, term uint64, reject bool) {
 		Term:    term,
 		Reject:  reject,
 	}
+	log.Warnf("Peer {%d} with term:{%d} send requestVote response to :{%d}, reject:{%t}", r.id, term, to, reject)
 	r.sendMessage(resp)
 }
 
@@ -363,10 +366,6 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateLeader:
 		r.tickHeartbeat()
-		if r.leadTransferee != None {
-			r.leaderTransferElapsed++
-			// If timeout, stop transfer
-		}
 	case StateFollower, StateCandidate:
 		r.tickElection()
 	}
@@ -375,13 +374,14 @@ func (r *Raft) tick() {
 func (r *Raft) tickElection() {
 	r.electionElapsed++
 	if r.electionElapsed >= r.randomElectionTimeout && r.State != StateLeader {
+		log.Warnf("Peer {%d} with term {%d} receive a campaign message, electionElapsed:{%d}, randElectionTimeout:{%d}",
+			r.id, r.Term, r.electionElapsed, r.randomElectionTimeout)
 		r.electionElapsed = 0
 		_ = r.Step(pb.Message{
 			MsgType: pb.MessageType_MsgHup,
 			From:    r.id,
 			Term:    r.Term,
 		})
-
 	}
 }
 
@@ -662,6 +662,8 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	if lastLogTerm > lastLocalTerm || (lastLogTerm == lastLocalTerm && lastLogIndex >= lastLocalIndex) {
 		reject = false
 		r.Vote = m.From
+		r.electionElapsed = 0
+		r.resetRandElectionTimeout()
 	}
 	r.sendRequestVoteResponse(m.From, r.Term, reject)
 }
@@ -691,9 +693,11 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 
 	majority := len(r.Prs) / 2
 	if granted > majority {
+		log.Warnf("Peer:{%d} win the compaign, become leader----------, term:{%d}", r.id, r.Term)
 		r.becomeLeader()
 	}
 	if rejected > majority {
+		log.Warnf("Peer{%d} fail the compaign, becom follower---------, term:{%d}", r.id, r.Term)
 		r.becomeFollower(m.Term, None)
 	}
 }
@@ -724,7 +728,6 @@ func (r *Raft) handlePropose(m pb.Message) {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	r.electionElapsed = 0
 
 	// 1. reject lower term
 	if m.Term < r.Term {
@@ -733,6 +736,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 
 	// 2. revert back to follower
+	r.electionElapsed = 0
+	r.resetRandElectionTimeout()
 	r.Lead = m.GetFrom()
 
 	// 2. check log consistency
@@ -837,12 +842,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	}
 
 	// If term is upper then local, become follower
-	if m.Term > r.Term {
-		r.becomeFollower(m.Term, m.From)
-	}
-
-	// Update
-	r.electionElapsed = 0
+	r.becomeFollower(m.Term, m.From)
 	if m.Commit > r.RaftLog.committed {
 		r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
 	}
