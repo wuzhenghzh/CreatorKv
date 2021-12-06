@@ -277,11 +277,7 @@ func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb
 	m.Unlock()
 
 	// 3. Create new peer
-	_ = d.createNewPeerAndStart(newRegion)
-	//if len(newRegion.Peers) > 1 {
-	//	// Just campaign to elect a new leader
-	//	_ = newPeer.RaftGroup.Campaign()
-	//}
+	newPeer := d.createNewPeerAndStart(newRegion)
 
 	// 4. Write region state
 	meta.WriteRegionState(kvWB, originRegion, rspb.PeerState_Normal)
@@ -306,6 +302,7 @@ func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb
 	if d.IsLeader() {
 		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
+	newPeer.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 }
 
 // handleCompactLogRequest update truncated state, schedule gc task to raftLog-gc worker

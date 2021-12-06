@@ -344,7 +344,6 @@ func (r *Raft) sendRequestVoteResponse(to uint64, term uint64, reject bool) {
 		Term:    term,
 		Reject:  reject,
 	}
-	log.Warnf("Peer {%d} with term:{%d} send requestVote response to :{%d}, reject:{%t}", r.id, term, to, reject)
 	r.sendMessage(resp)
 }
 
@@ -449,6 +448,8 @@ func (r *Raft) becomeLeader() {
 		Index:     r.RaftLog.LastIndex() + 1,
 	}
 	r.RaftLog.appendEntries([]*pb.Entry{noopLog})
+	log.Warnf("peer:{%d} become leader success, try send noop log to all followers, index:{%d}, term:{%d}",
+		r.id, noopLog.Index, noopLog.Term)
 	r.broadcast()
 
 	// Update self progress
@@ -693,11 +694,9 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 
 	majority := len(r.Prs) / 2
 	if granted > majority {
-		log.Warnf("Peer:{%d} win the compaign, become leader----------, term:{%d}", r.id, r.Term)
 		r.becomeLeader()
 	}
 	if rejected > majority {
-		log.Warnf("Peer{%d} fail the compaign, becom follower---------, term:{%d}", r.id, r.Term)
 		r.becomeFollower(m.Term, None)
 	}
 }
@@ -933,7 +932,7 @@ func (r *Raft) resetNode() {
 	r.heartbeatElapsed = 0
 	r.leaderTransferElapsed = 0
 	r.leadTransferee = None
-	r.votes = make(map[uint64]bool, 0)
+	r.votes = make(map[uint64]bool)
 	r.Vote = None
 	r.Lead = None
 }

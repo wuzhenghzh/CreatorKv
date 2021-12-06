@@ -114,15 +114,14 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 
 func (l *RaftLog) getEntriesFromIndex(index uint64) []*pb.Entry {
 	var entries []*pb.Entry
-	for _, entry := range l.entries {
-		if entry.Index >= index {
-			entries = append(entries, &pb.Entry{
-				EntryType: entry.EntryType,
-				Term:      entry.Term,
-				Index:     entry.Index,
-				Data:      entry.Data,
-			})
-		}
+	n := len(l.entries)
+	beginIndex := index - l.firstLogIndex
+	if beginIndex < 0 {
+		beginIndex = 0
+	}
+	for i := int(beginIndex); i < n; i++ {
+		entry := l.entries[i]
+		entries = append(entries, &entry)
 	}
 	return entries
 }
