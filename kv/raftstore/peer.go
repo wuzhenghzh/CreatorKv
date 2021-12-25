@@ -180,16 +180,6 @@ func (p *peer) getPeerFromCache(peerID uint64) *metapb.Peer {
 	return nil
 }
 
-func (p *peer) getAndRemoveProposal(index uint64) *proposal {
-	for i, pr := range p.proposals {
-		if pr.index == index {
-			p.proposals = append(p.proposals[:i], p.proposals[i+1:]...)
-			return pr
-		}
-	}
-	return &proposal{}
-}
-
 func (p *peer) nextProposalIndex() uint64 {
 	return p.RaftGroup.Raft.RaftLog.LastIndex() + 1
 }

@@ -43,16 +43,25 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-func (d *peerMsgHandler) getProposal(index uint64, expectedTerm uint64) (*proposal, error) {
-	pr := d.getAndRemoveProposal(index)
-	if pr == nil {
-		return nil, errors.New("Failed to get pr")
+func (d *peerMsgHandler) getProposal(index uint64, term uint64) (*proposal, error) {
+	p := d.peer
+	for len(p.proposals) > 0 {
+		pr := p.proposals[0]
+		if pr.term > term && pr.index > index {
+			return nil, errors.New("the index and term are not match")
+		}
+		if pr.term == term {
+			if pr.index == index {
+				p.proposals = p.proposals[1:]
+				return pr, nil
+			} else {
+				panic(fmt.Sprintf("Unexpected callback at term {}, found index {}, expected {}", term, pr.index, index))
+			}
+		} else {
+			NotifyStaleReq(d.RaftGroup.Raft.Term, pr.cb)
+		}
 	}
-	if pr.term != expectedTerm {
-		NotifyStaleReq(expectedTerm, pr.cb)
-		return nil, errors.New("Stale request")
-	}
-	return pr, nil
+	return nil, nil
 }
 
 func (d *peerMsgHandler) appendProposal(cb *message.Callback) {

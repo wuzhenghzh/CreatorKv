@@ -344,215 +344,215 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	}
 }
 
-func TestBasic2B(t *testing.T) {
-	// Test: one client (2B) ...
-	GenericTest(t, "2B", 1, false, false, false, -1, false, false)
-}
-
-func TestConcurrent2B(t *testing.T) {
-	// Test: many clients (2B) ...
-	GenericTest(t, "2B", 5, false, false, false, -1, false, false)
-}
-
-func TestUnreliable2B(t *testing.T) {
-	// Test: unreliable net, many clients (2B) ...
-	GenericTest(t, "2B", 5, true, false, false, -1, false, false)
-}
-
-// Submit a request in the minority partition and check that the requests
-// doesn't go through until the partition heals.  The leader in the original
-// network ends up in the minority partition.
-func TestOnePartition2B(t *testing.T) {
-	cfg := config.NewTestConfig()
-	cluster := NewTestCluster(5, cfg)
-	cluster.Start()
-	defer cluster.Shutdown()
-
-	region := cluster.GetRegion([]byte(""))
-	leader := cluster.LeaderOfRegion(region.GetId())
-	s1 := []uint64{leader.GetStoreId()}
-	s2 := []uint64{}
-	for _, p := range region.GetPeers() {
-		if p.GetId() == leader.GetId() {
-			continue
-		}
-		if len(s1) < 3 {
-			s1 = append(s1, p.GetStoreId())
-		} else {
-			s2 = append(s2, p.GetStoreId())
-		}
-	}
-
-	// leader in majority, partition doesn't affect write/read
-	cluster.AddFilter(&PartitionFilter{
-		s1: s1,
-		s2: s2,
-	})
-	cluster.MustPut([]byte("k1"), []byte("v1"))
-	cluster.MustGet([]byte("k1"), []byte("v1"))
-	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("v1"))
-	MustGetEqual(cluster.engines[s1[1]], []byte("k1"), []byte("v1"))
-	MustGetEqual(cluster.engines[s1[2]], []byte("k1"), []byte("v1"))
-
-	MustGetNone(cluster.engines[s2[0]], []byte("k1"))
-	MustGetNone(cluster.engines[s2[1]], []byte("k1"))
-	cluster.ClearFilters()
-
-	// old leader in minority, new leader should be elected
-	s2 = append(s2, s1[2])
-	s1 = s1[:2]
-	cluster.AddFilter(&PartitionFilter{
-		s1: s1,
-		s2: s2,
-	})
-	cluster.MustGet([]byte("k1"), []byte("v1"))
-	cluster.MustPut([]byte("k1"), []byte("changed"))
-	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("v1"))
-	MustGetEqual(cluster.engines[s1[1]], []byte("k1"), []byte("v1"))
-	cluster.ClearFilters()
-
-	// when partition heals, old leader should sync data
-	cluster.MustPut([]byte("k2"), []byte("v2"))
-	MustGetEqual(cluster.engines[s1[0]], []byte("k2"), []byte("v2"))
-	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("changed"))
-}
-
-func TestManyPartitionsOneClient2B(t *testing.T) {
-	// Test: partitions, one client (2B) ...
-	GenericTest(t, "2B", 1, false, false, true, -1, false, false)
-}
-
-func TestManyPartitionsManyClients2B(t *testing.T) {
-	// Test: partitions, many clients (2B) ...
-	GenericTest(t, "2B", 5, false, false, true, -1, false, false)
-}
-
-func TestPersistOneClient2B(t *testing.T) {
-	// Test: restarts, one client (2B) ...
-	GenericTest(t, "2B", 1, false, true, false, -1, false, false)
-}
-
-func TestPersistConcurrent2B(t *testing.T) {
-	// Test: restarts, many clients (2B) ...
-	GenericTest(t, "2B", 5, false, true, false, -1, false, false)
-}
-
-func TestPersistConcurrentUnreliable2B(t *testing.T) {
-	// Test: unreliable net, restarts, many clients (2B) ...
-	GenericTest(t, "2B", 5, true, true, false, -1, false, false)
-}
-
-func TestPersistPartition2B(t *testing.T) {
-	// Test: restarts, partitions, many clients (2B) ...
-	GenericTest(t, "2B", 5, false, true, true, -1, false, false)
-}
-
-func TestPersistPartitionUnreliable2B(t *testing.T) {
-	// Test: unreliable net, restarts, partitions, many clients (3A) ...
-	GenericTest(t, "2B", 5, true, true, true, -1, false, false)
-}
-
-func TestOneSnapshot2C(t *testing.T) {
-	cfg := config.NewTestConfig()
-	cfg.RaftLogGcCountLimit = 10
-	cluster := NewTestCluster(3, cfg)
-	cluster.Start()
-	defer cluster.Shutdown()
-
-	cf := engine_util.CfLock
-	cluster.MustPutCF(cf, []byte("k1"), []byte("v1"))
-	cluster.MustPutCF(cf, []byte("k2"), []byte("v2"))
-
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k2"), []byte("v2"))
-
-	for _, engine := range cluster.engines {
-		state, err := meta.GetApplyState(engine.Kv, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if state.TruncatedState.Index != meta.RaftInitLogIndex ||
-			state.TruncatedState.Term != meta.RaftInitLogTerm {
-			t.Fatalf("unexpected truncated state %v", state.TruncatedState)
-		}
-	}
-
-	cluster.AddFilter(
-		&PartitionFilter{
-			s1: []uint64{1},
-			s2: []uint64{2, 3},
-		},
-	)
-
-	// write some data to trigger snapshot
-	for i := 100; i < 115; i++ {
-		cluster.MustPutCF(cf, []byte(fmt.Sprintf("k%d", i)), []byte(fmt.Sprintf("v%d", i)))
-	}
-	cluster.MustDeleteCF(cf, []byte("k2"))
-	time.Sleep(500 * time.Millisecond)
-	MustGetCfNone(cluster.engines[1], cf, []byte("k100"))
-	cluster.ClearFilters()
-
-	// Now snapshot must applied on
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k100"), []byte("v100"))
-	MustGetCfNone(cluster.engines[1], cf, []byte("k2"))
-
-	cluster.StopServer(1)
-	cluster.StartServer(1)
-
-	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
-	for _, engine := range cluster.engines {
-		state, err := meta.GetApplyState(engine.Kv, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		truncatedIdx := state.TruncatedState.Index
-		appliedIdx := state.AppliedIndex
-		if appliedIdx-truncatedIdx > 2*uint64(cfg.RaftLogGcCountLimit) {
-			t.Fatalf("logs were not trimmed (%v - %v > 2*%v)", appliedIdx, truncatedIdx, cfg.RaftLogGcCountLimit)
-		}
-	}
-}
-
-func TestSnapshotRecover2C(t *testing.T) {
-	// Test: restarts, snapshots, one client (2C) ...
-	GenericTest(t, "2C", 1, false, true, false, 100, false, false)
-}
-
-func TestSnapshotRecoverManyClients2C(t *testing.T) {
-	// Test: restarts, snapshots, many clients (2C) ...
-	GenericTest(t, "2C", 20, false, true, false, 100, false, false)
-}
-
-func TestSnapshotUnreliable2C(t *testing.T) {
-	// Test: unreliable net, snapshots, many clients (2C) ...
-	GenericTest(t, "2C", 5, true, false, false, 100, false, false)
-}
-
-func TestSnapshotUnreliableRecover2C(t *testing.T) {
-	// Test: unreliable net, restarts, snapshots, many clients (2C) ...
-	GenericTest(t, "2C", 5, true, true, false, 100, false, false)
-}
-
-func TestSnapshotUnreliableRecoverConcurrentPartition2C(t *testing.T) {
-	// Test: unreliable net, restarts, partitions, snapshots, many clients (2C) ...
-	GenericTest(t, "2C", 5, true, true, true, 100, false, false)
-}
-
-func TestTransferLeader3B(t *testing.T) {
-	cfg := config.NewTestConfig()
-	cluster := NewTestCluster(5, cfg)
-	cluster.Start()
-	defer cluster.Shutdown()
-
-	regionID := cluster.GetRegion([]byte("")).GetId()
-	cluster.MustTransferLeader(regionID, NewPeer(1, 1))
-	cluster.MustTransferLeader(regionID, NewPeer(2, 2))
-	cluster.MustTransferLeader(regionID, NewPeer(3, 3))
-	cluster.MustTransferLeader(regionID, NewPeer(4, 4))
-	cluster.MustTransferLeader(regionID, NewPeer(5, 5))
-}
+//func TestBasic2B(t *testing.T) {
+//	// Test: one client (2B) ...
+//	GenericTest(t, "2B", 1, false, false, false, -1, false, false)
+//}
+//
+//func TestConcurrent2B(t *testing.T) {
+//	// Test: many clients (2B) ...
+//	GenericTest(t, "2B", 5, false, false, false, -1, false, false)
+//}
+//
+//func TestUnreliable2B(t *testing.T) {
+//	// Test: unreliable net, many clients (2B) ...
+//	GenericTest(t, "2B", 5, true, false, false, -1, false, false)
+//}
+//
+//// Submit a request in the minority partition and check that the requests
+//// doesn't go through until the partition heals.  The leader in the original
+//// network ends up in the minority partition.
+//func TestOnePartition2B(t *testing.T) {
+//	cfg := config.NewTestConfig()
+//	cluster := NewTestCluster(5, cfg)
+//	cluster.Start()
+//	defer cluster.Shutdown()
+//
+//	region := cluster.GetRegion([]byte(""))
+//	leader := cluster.LeaderOfRegion(region.GetId())
+//	s1 := []uint64{leader.GetStoreId()}
+//	s2 := []uint64{}
+//	for _, p := range region.GetPeers() {
+//		if p.GetId() == leader.GetId() {
+//			continue
+//		}
+//		if len(s1) < 3 {
+//			s1 = append(s1, p.GetStoreId())
+//		} else {
+//			s2 = append(s2, p.GetStoreId())
+//		}
+//	}
+//
+//	// leader in majority, partition doesn't affect write/read
+//	cluster.AddFilter(&PartitionFilter{
+//		s1: s1,
+//		s2: s2,
+//	})
+//	cluster.MustPut([]byte("k1"), []byte("v1"))
+//	cluster.MustGet([]byte("k1"), []byte("v1"))
+//	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("v1"))
+//	MustGetEqual(cluster.engines[s1[1]], []byte("k1"), []byte("v1"))
+//	MustGetEqual(cluster.engines[s1[2]], []byte("k1"), []byte("v1"))
+//
+//	MustGetNone(cluster.engines[s2[0]], []byte("k1"))
+//	MustGetNone(cluster.engines[s2[1]], []byte("k1"))
+//	cluster.ClearFilters()
+//
+//	// old leader in minority, new leader should be elected
+//	s2 = append(s2, s1[2])
+//	s1 = s1[:2]
+//	cluster.AddFilter(&PartitionFilter{
+//		s1: s1,
+//		s2: s2,
+//	})
+//	cluster.MustGet([]byte("k1"), []byte("v1"))
+//	cluster.MustPut([]byte("k1"), []byte("changed"))
+//	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("v1"))
+//	MustGetEqual(cluster.engines[s1[1]], []byte("k1"), []byte("v1"))
+//	cluster.ClearFilters()
+//
+//	// when partition heals, old leader should sync data
+//	cluster.MustPut([]byte("k2"), []byte("v2"))
+//	MustGetEqual(cluster.engines[s1[0]], []byte("k2"), []byte("v2"))
+//	MustGetEqual(cluster.engines[s1[0]], []byte("k1"), []byte("changed"))
+//}
+//
+//func TestManyPartitionsOneClient2B(t *testing.T) {
+//	// Test: partitions, one client (2B) ...
+//	GenericTest(t, "2B", 1, false, false, true, -1, false, false)
+//}
+//
+//func TestManyPartitionsManyClients2B(t *testing.T) {
+//	// Test: partitions, many clients (2B) ...
+//	GenericTest(t, "2B", 5, false, false, true, -1, false, false)
+//}
+//
+//func TestPersistOneClient2B(t *testing.T) {
+//	// Test: restarts, one client (2B) ...
+//	GenericTest(t, "2B", 1, false, true, false, -1, false, false)
+//}
+//
+//func TestPersistConcurrent2B(t *testing.T) {
+//	// Test: restarts, many clients (2B) ...
+//	GenericTest(t, "2B", 5, false, true, false, -1, false, false)
+//}
+//
+//func TestPersistConcurrentUnreliable2B(t *testing.T) {
+//	// Test: unreliable net, restarts, many clients (2B) ...
+//	GenericTest(t, "2B", 5, true, true, false, -1, false, false)
+//}
+//
+//func TestPersistPartition2B(t *testing.T) {
+//	// Test: restarts, partitions, many clients (2B) ...
+//	GenericTest(t, "2B", 5, false, true, true, -1, false, false)
+//}
+//
+//func TestPersistPartitionUnreliable2B(t *testing.T) {
+//	// Test: unreliable net, restarts, partitions, many clients (3A) ...
+//	GenericTest(t, "2B", 5, true, true, true, -1, false, false)
+//}
+//
+//func TestOneSnapshot2C(t *testing.T) {
+//	cfg := config.NewTestConfig()
+//	cfg.RaftLogGcCountLimit = 10
+//	cluster := NewTestCluster(3, cfg)
+//	cluster.Start()
+//	defer cluster.Shutdown()
+//
+//	cf := engine_util.CfLock
+//	cluster.MustPutCF(cf, []byte("k1"), []byte("v1"))
+//	cluster.MustPutCF(cf, []byte("k2"), []byte("v2"))
+//
+//	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
+//	MustGetCfEqual(cluster.engines[1], cf, []byte("k2"), []byte("v2"))
+//
+//	for _, engine := range cluster.engines {
+//		state, err := meta.GetApplyState(engine.Kv, 1)
+//		if err != nil {
+//			t.Fatal(err)
+//		}
+//		if state.TruncatedState.Index != meta.RaftInitLogIndex ||
+//			state.TruncatedState.Term != meta.RaftInitLogTerm {
+//			t.Fatalf("unexpected truncated state %v", state.TruncatedState)
+//		}
+//	}
+//
+//	cluster.AddFilter(
+//		&PartitionFilter{
+//			s1: []uint64{1},
+//			s2: []uint64{2, 3},
+//		},
+//	)
+//
+//	// write some data to trigger snapshot
+//	for i := 100; i < 115; i++ {
+//		cluster.MustPutCF(cf, []byte(fmt.Sprintf("k%d", i)), []byte(fmt.Sprintf("v%d", i)))
+//	}
+//	cluster.MustDeleteCF(cf, []byte("k2"))
+//	time.Sleep(500 * time.Millisecond)
+//	MustGetCfNone(cluster.engines[1], cf, []byte("k100"))
+//	cluster.ClearFilters()
+//
+//	// Now snapshot must applied on
+//	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
+//	MustGetCfEqual(cluster.engines[1], cf, []byte("k100"), []byte("v100"))
+//	MustGetCfNone(cluster.engines[1], cf, []byte("k2"))
+//
+//	cluster.StopServer(1)
+//	cluster.StartServer(1)
+//
+//	MustGetCfEqual(cluster.engines[1], cf, []byte("k1"), []byte("v1"))
+//	for _, engine := range cluster.engines {
+//		state, err := meta.GetApplyState(engine.Kv, 1)
+//		if err != nil {
+//			t.Fatal(err)
+//		}
+//		truncatedIdx := state.TruncatedState.Index
+//		appliedIdx := state.AppliedIndex
+//		if appliedIdx-truncatedIdx > 2*uint64(cfg.RaftLogGcCountLimit) {
+//			t.Fatalf("logs were not trimmed (%v - %v > 2*%v)", appliedIdx, truncatedIdx, cfg.RaftLogGcCountLimit)
+//		}
+//	}
+//}
+//
+//func TestSnapshotRecover2C(t *testing.T) {
+//	// Test: restarts, snapshots, one client (2C) ...
+//	GenericTest(t, "2C", 1, false, true, false, 100, false, false)
+//}
+//
+//func TestSnapshotRecoverManyClients2C(t *testing.T) {
+//	// Test: restarts, snapshots, many clients (2C) ...
+//	GenericTest(t, "2C", 20, false, true, false, 100, false, false)
+//}
+//
+//func TestSnapshotUnreliable2C(t *testing.T) {
+//	// Test: unreliable net, snapshots, many clients (2C) ...
+//	GenericTest(t, "2C", 5, true, false, false, 100, false, false)
+//}
+//
+//func TestSnapshotUnreliableRecover2C(t *testing.T) {
+//	// Test: unreliable net, restarts, snapshots, many clients (2C) ...
+//	GenericTest(t, "2C", 5, true, true, false, 100, false, false)
+//}
+//
+//func TestSnapshotUnreliableRecoverConcurrentPartition2C(t *testing.T) {
+//	// Test: unreliable net, restarts, partitions, snapshots, many clients (2C) ...
+//	GenericTest(t, "2C", 5, true, true, true, 100, false, false)
+//}
+//
+//func TestTransferLeader3B(t *testing.T) {
+//	cfg := config.NewTestConfig()
+//	cluster := NewTestCluster(5, cfg)
+//	cluster.Start()
+//	defer cluster.Shutdown()
+//
+//	regionID := cluster.GetRegion([]byte("")).GetId()
+//	cluster.MustTransferLeader(regionID, NewPeer(1, 1))
+//	cluster.MustTransferLeader(regionID, NewPeer(2, 2))
+//	cluster.MustTransferLeader(regionID, NewPeer(3, 3))
+//	cluster.MustTransferLeader(regionID, NewPeer(4, 4))
+//	cluster.MustTransferLeader(regionID, NewPeer(5, 5))
+//}
 
 func TestBasicConfChange3B(t *testing.T) {
 	cfg := config.NewTestConfig()
