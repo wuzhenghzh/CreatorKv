@@ -48,16 +48,18 @@ func (d *peerMsgHandler) getProposal(index uint64, term uint64) (*proposal, erro
 	for len(p.proposals) > 0 {
 		pr := p.proposals[0]
 		if pr.term > term && pr.index > index {
-			return nil, errors.New("the index and term are not match")
+			return nil, errors.New("The index and term are not match")
 		}
 		if pr.term == term {
 			if pr.index == index {
 				p.proposals = p.proposals[1:]
 				return pr, nil
 			} else {
-				panic(fmt.Sprintf("Unexpected callback at term {}, found index {}, expected {}", term, pr.index, index))
+				p.proposals = p.proposals[1:]
+				NotifyStaleReq(term, pr.cb)
 			}
 		} else {
+			p.proposals = p.proposals[1:]
 			currentTerm := d.RaftGroup.Raft.Term
 			log.Errorf("The request pr is staled, peerId:{%d}, index:{%d}, term:{%d}, prIndex:{%d}, prTerm:{%d}, currentTerm:{%d}", d.PeerId(), index, term, pr.index, pr.term, currentTerm)
 			NotifyStaleReq(currentTerm, pr.cb)

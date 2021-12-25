@@ -138,6 +138,11 @@ type Raft struct {
 
 	// heartbeat interval, should send
 	heartbeatTimeout int
+	// leader alive timeout
+	leaderAliveTimeout int
+	// leader lease
+	leaderLeaseTimeout int64
+
 	// baseline of election interval
 	electionTimeout int
 	// rand et timeout, in the interval of [electionTimeout, electionTimeout + rand(electionTimeout)]
@@ -149,6 +154,8 @@ type Raft struct {
 	// Number of ticks since it reached last electionTimeout or received a
 	// valid message from current leader when it is a follower.
 	electionElapsed int
+
+	leaderAliveElapsed int
 
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in section 3.10 of Raft phd thesis.
@@ -175,15 +182,17 @@ func newRaft(c *Config) *Raft {
 	// Your Code Here (2A).
 	hardState, confState, _ := c.Storage.InitialState()
 	raft := &Raft{
-		id:               c.ID,
-		electionTimeout:  c.ElectionTick,
-		heartbeatTimeout: c.HeartbeatTick,
-		Term:             hardState.Term,
-		Vote:             hardState.Vote,
-		votes:            map[uint64]bool{},
-		Prs:              map[uint64]*Progress{},
-		RaftLog:          newLog(c.Storage),
-		State:            StateFollower,
+		id:                 c.ID,
+		electionTimeout:    c.ElectionTick,
+		heartbeatTimeout:   c.HeartbeatTick,
+		leaderLeaseTimeout: int64(c.ElectionTick * 90),
+		leaderAliveTimeout: c.ElectionTick * 3,
+		Term:               hardState.Term,
+		Vote:               hardState.Vote,
+		votes:              map[uint64]bool{},
+		Prs:                map[uint64]*Progress{},
+		RaftLog:            newLog(c.Storage),
+		State:              StateFollower,
 	}
 
 	if raft.Term == 0 {
@@ -367,10 +376,13 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateLeader:
 		r.tickHeartbeat()
+		r.tickLeaderLeaseCheck()
 	case StateFollower:
 		r.tickElection()
 	case StateCandidate:
-		r.tickElection()
+		{
+			r.tickElection()
+		}
 	}
 }
 
@@ -397,6 +409,30 @@ func (r *Raft) tickHeartbeat() {
 			From:    r.id,
 			Term:    r.Term,
 		})
+	}
+}
+
+func (r *Raft) tickLeaderLeaseCheck() {
+	r.leaderAliveElapsed++
+	if r.leaderAliveElapsed >= r.leaderAliveTimeout && r.State == StateLeader {
+		r.leaderAliveElapsed = 0
+		// Check whether leader is valid
+		curTs := curMs()
+		aliveCount := 0
+		for to := range r.Prs {
+			if to == r.id {
+				aliveCount++
+				continue
+			}
+			interval := curTs - r.Prs[to].lastCommunicateTs
+			if interval < r.leaderLeaseTimeout {
+				aliveCount++
+			}
+		}
+		if aliveCount <= len(r.Prs)/2 {
+			log.Errorf("Leader {%d} lease is timeout, and the leader has not enough alive follower", r.id)
+			r.becomeFollower(r.Term, None)
+		}
 	}
 }
 
@@ -448,6 +484,7 @@ func (r *Raft) becomeLeader() {
 		} else {
 			r.Prs[peer].Next = lastIndex + 1
 			r.Prs[peer].Match = 0
+			r.updateLastCommunicateTs(peer)
 		}
 	}
 
@@ -592,6 +629,7 @@ func (r *Raft) stepLeader(m pb.Message) {
 	// the follower doesn't have update-to-date log
 	case pb.MessageType_MsgHeartbeatResponse:
 		{
+			r.updateLastCommunicateTs(m.From)
 			if r.RaftLog.LastIndex() > r.Prs[m.From].Next {
 				r.sendAppend(m.From)
 			}
@@ -757,10 +795,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
-	log.Warnf("Peer {%d} handle append from leader {%d}, index:{%d}, term:{%d}", r.id, m.From, m.Index, m.LogTerm)
-	if len(m.Entries) == 0 && m.Commit == r.RaftLog.committed && m.Commit >= 9 {
-		log.Warnf("Peer{%d} receive commit msg from leader {%d}, commitIndex:{%d}, localCommitted :{%d}", r.id, m.From, m.Commit, r.RaftLog.committed)
-	}
+	//log.Warnf("Peer {%d} handle append from leader {%d}, index:{%d}, term:{%d}", r.id, m.From, m.Index, m.LogTerm)
+	//if len(m.Entries) == 0 && m.Commit == r.RaftLog.committed && m.Commit >= 9 {
+	//	log.Warnf("Peer{%d} receive commit msg from leader {%d}, commitIndex:{%d}, localCommitted :{%d}", r.id, m.From, m.Commit, r.RaftLog.committed)
+	//}
 
 	// 3.handle log conflicts
 	for i, entry := range m.Entries {
@@ -790,8 +828,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
 }
 
+func curMs() int64 {
+	return time.Now().UnixNano() / 1e6
+}
+
 func (r *Raft) updateLastCommunicateTs(id uint64) {
-	r.Prs[id].lastCommunicateTs = time.Now().UnixNano() / 1e6
+	r.Prs[id].lastCommunicateTs = curMs()
 }
 
 // handleAppendResponse handle AppendEntry response
@@ -844,9 +886,6 @@ func (r *Raft) boostCommitIndexAndBroadCast() {
 		}
 	}
 	if maxCommitIndex > r.RaftLog.committed {
-		if maxCommitIndex == 9 {
-			log.Infof("Boost up commitIndex from {%d} to {%d}", r.RaftLog.committed, maxCommitIndex)
-		}
 		r.RaftLog.committed = maxCommitIndex
 		// Broadcast to followers to boost commitIndex
 		r.broadcast()
@@ -864,9 +903,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// If term is upper then local, become follower
 	r.becomeFollower(m.Term, m.From)
 	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
+		r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
 	}
-
 	r.sendHeartbeatResponse(m.From)
 }
 
