@@ -218,6 +218,10 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 		if leader == nil {
 			panic(fmt.Sprintf("can't get leader of region %d", regionID))
 		}
+		if leader.GetId() == 5 && request.Requests[0].Put != nil {
+			println("herer....")
+		}
+		log.Infof("Try send put request, leaderID:{%d}", leader.GetId())
 		request.Header.Peer = leader
 		resp, txn := c.CallCommand(request, 1*time.Second)
 		if resp == nil {

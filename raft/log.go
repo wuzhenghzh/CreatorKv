@@ -127,11 +127,9 @@ func (l *RaftLog) getEntriesFromIndex(index uint64) []*pb.Entry {
 }
 
 func (l *RaftLog) deleteEntriesFromIndex(index uint64) {
-	for i, v := range l.entries {
-		if v.Index == index {
-			l.entries = l.entries[:i]
-		}
-	}
+	idx := index - l.firstLogIndex
+	l.entries = l.entries[:idx]
+
 	lastLogIndex := l.LastIndex()
 	l.committed = min(l.committed, lastLogIndex)
 	l.applied = min(l.applied, lastLogIndex)
@@ -157,15 +155,16 @@ func (l *RaftLog) FirstIndex() uint64 {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	var index uint64
 	if !IsEmptySnap(l.pendingSnapshot) {
-		return l.pendingSnapshot.Metadata.Index
+		index = l.pendingSnapshot.Metadata.Index
 	}
 	logLen := len(l.entries)
 	if logLen >= 1 {
 		return l.entries[logLen-1].Index
 	}
 	lastIndex, _ := l.storage.LastIndex()
-	return lastIndex
+	return max(index, lastIndex)
 }
 
 // Term return the term of the entry in the given index
@@ -193,12 +192,7 @@ func (l *RaftLog) LastTerm() uint64 {
 // appendEntries with their own term and index
 func (l *RaftLog) appendEntries(entries []*pb.Entry) {
 	for _, entry := range entries {
-		l.entries = append(l.entries, pb.Entry{
-			EntryType: entry.EntryType,
-			Term:      entry.Term,
-			Index:     entry.Index,
-			Data:      entry.Data,
-		})
+		l.entries = append(l.entries, *entry)
 	}
 }
 

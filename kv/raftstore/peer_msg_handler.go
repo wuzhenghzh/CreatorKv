@@ -58,7 +58,9 @@ func (d *peerMsgHandler) getProposal(index uint64, term uint64) (*proposal, erro
 				panic(fmt.Sprintf("Unexpected callback at term {}, found index {}, expected {}", term, pr.index, index))
 			}
 		} else {
-			NotifyStaleReq(d.RaftGroup.Raft.Term, pr.cb)
+			currentTerm := d.RaftGroup.Raft.Term
+			log.Errorf("The request pr is staled, peerId:{%d}, index:{%d}, term:{%d}, prIndex:{%d}, prTerm:{%d}, currentTerm:{%d}", d.PeerId(), index, term, pr.index, pr.term, currentTerm)
+			NotifyStaleReq(currentTerm, pr.cb)
 		}
 	}
 	return nil, nil
@@ -256,14 +258,18 @@ func (d *peerMsgHandler) applyAdminRequest(msg *raft_cmdpb.RaftCmdRequest, entry
 // handleSplitRegion Split the region into two regions
 func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, req *raft_cmdpb.SplitRequest, kvWB *engine_util.WriteBatch) {
 	// 0.Check region epoch and whether key was in region
-	err := util.CheckRegionEpoch(msg, d.Region(), true)
-	if err == nil {
-		err = util.CheckKeyInRegion(req.SplitKey, d.Region())
-	}
+	err := util.CheckKeyInRegion(req.SplitKey, d.Region())
 	if err != nil {
-		pr, _ := d.getProposal(entry.Index, entry.Term)
-		if pr != nil {
-			pr.cb.Done(ErrResp(err))
+		p, _ := d.getProposal(entry.Index, entry.Term)
+		if p != nil {
+			p.cb.Done(ErrResp(err))
+		}
+		return
+	}
+	if err = util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
+		p, _ := d.getProposal(entry.Index, entry.Term)
+		if p != nil {
+			p.cb.Done(ErrResp(err))
 		}
 		return
 	}

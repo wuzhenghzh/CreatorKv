@@ -19,6 +19,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
+	"time"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -106,6 +107,9 @@ func (c *Config) validate() error {
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
 	Match, Next uint64
+
+	// the last communication ts
+	lastCommunicateTs int64
 }
 
 type Raft struct {
@@ -152,10 +156,6 @@ type Raft struct {
 	// (Used in 3A leader transfer)
 	leadTransferee uint64
 
-	// number of ticks since it reached last leaderTransfer request.
-	// todo: hwo to set the limit timeout?
-	leaderTransferElapsed int
-
 	// Only one conf change may be pending (in the log, but not yet
 	// applied) at a time. This is enforced via PendingConfIndex, which
 	// is set to a value >= the log index of the latest pending
@@ -189,7 +189,6 @@ func newRaft(c *Config) *Raft {
 	if raft.Term == 0 {
 		raft.Term = raft.RaftLog.LastTerm()
 	}
-	raft.resetRandElectionTimeout()
 
 	// Init prs
 	if c.peers == nil {
@@ -208,9 +207,12 @@ func newRaft(c *Config) *Raft {
 			}
 		}
 	}
+	raft.resetRandElectionTimeout()
 	// Init raft log
 	raft.RaftLog.committed = hardState.Commit
-	raft.RaftLog.applied = c.Applied
+	if c.Applied > 0 {
+		raft.RaftLog.applied = c.Applied
+	}
 	return raft
 }
 
@@ -248,7 +250,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 // broadcast send append rpc to all followers
 func (r *Raft) broadcast() {
-	for to, _ := range r.Prs {
+	for to := range r.Prs {
 		if to != r.id {
 			r.sendAppend(to)
 		}
@@ -323,14 +325,14 @@ func (r *Raft) sendHeartbeatToFollowers() {
 }
 
 // sendRequestVote sends a requestVote RPC to the given peer
-func (r *Raft) sendRequestVote(to uint64) {
+func (r *Raft) sendRequestVote(to uint64, lastIndex uint64, lastTerm uint64) {
 	m := pb.Message{
 		MsgType: pb.MessageType_MsgRequestVote,
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
-		LogTerm: r.RaftLog.LastTerm(),
-		Index:   r.RaftLog.LastIndex(),
+		LogTerm: lastTerm,
+		Index:   lastIndex,
 	}
 	r.sendMessage(m)
 }
@@ -365,7 +367,9 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateLeader:
 		r.tickHeartbeat()
-	case StateFollower, StateCandidate:
+	case StateFollower:
+		r.tickElection()
+	case StateCandidate:
 		r.tickElection()
 	}
 }
@@ -436,9 +440,15 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 
 	// Update all progresses
-	for _, progress := range r.Prs {
-		progress.Match = 0
-		progress.Next = r.RaftLog.LastIndex() + 1
+	lastIndex := r.RaftLog.LastIndex()
+	for peer := range r.Prs {
+		if peer == r.id {
+			r.Prs[peer].Next = lastIndex + 2
+			r.Prs[peer].Match = lastIndex + 1
+		} else {
+			r.Prs[peer].Next = lastIndex + 1
+			r.Prs[peer].Match = 0
+		}
 	}
 
 	// Send a noop log to followers to establish its authority and prevent new elections
@@ -452,14 +462,10 @@ func (r *Raft) becomeLeader() {
 		r.id, noopLog.Index, noopLog.Term)
 	r.broadcast()
 
-	// Update self progress
-	lastIndex := r.RaftLog.LastIndex()
-	r.Prs[r.id].Next = lastIndex + 1
-	r.Prs[r.id].Match = lastIndex
+	// Update Committed index
 	if len(r.Prs) == 1 {
-		r.RaftLog.committed = lastIndex
+		r.RaftLog.committed = r.Prs[r.id].Match
 	}
-
 }
 
 /***********************************  4.step and stepxxx function  *****************************************/
@@ -470,6 +476,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	// Leader change
 	if m.Term > r.Term {
+		r.leadTransferee = None
 		r.becomeFollower(m.Term, None)
 	}
 
@@ -585,7 +592,9 @@ func (r *Raft) stepLeader(m pb.Message) {
 	// the follower doesn't have update-to-date log
 	case pb.MessageType_MsgHeartbeatResponse:
 		{
-			r.sendAppend(m.From)
+			if r.RaftLog.LastIndex() > r.Prs[m.From].Next {
+				r.sendAppend(m.From)
+			}
 		}
 	// no-op log
 	case pb.MessageType_MsgPropose:
@@ -635,18 +644,19 @@ func (r *Raft) handleCampaign() {
 		return
 	}
 	// Send requestVote request to all nodes
+	lastIndex, lastTerm := r.RaftLog.LastIndex(), r.RaftLog.LastTerm()
 	for to, _ := range r.Prs {
 		if r.id == to {
 			continue
 		}
-		r.sendRequestVote(to)
+		r.sendRequestVote(to, lastIndex, lastTerm)
 	}
 }
 
 // handleRequestVote handle RequestVote RPC request
 func (r *Raft) handleRequestVote(m pb.Message) {
 	// 1.Reject lower term
-	if m.Term < r.Term {
+	if m.Term != None && m.Term < r.Term {
 		r.sendRequestVoteResponse(m.From, r.Term, true)
 		return
 	}
@@ -747,6 +757,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
+	log.Warnf("Peer {%d} handle append from leader {%d}, index:{%d}, term:{%d}", r.id, m.From, m.Index, m.LogTerm)
+	if len(m.Entries) == 0 && m.Commit == r.RaftLog.committed && m.Commit >= 9 {
+		log.Warnf("Peer{%d} receive commit msg from leader {%d}, commitIndex:{%d}, localCommitted :{%d}", r.id, m.From, m.Commit, r.RaftLog.committed)
+	}
+
 	// 3.handle log conflicts
 	for i, entry := range m.Entries {
 		index := entry.Index
@@ -759,8 +774,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				// delete from here
 				r.RaftLog.deleteEntriesFromIndex(index)
 				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
-				// update stableIndex
-				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 			}
 		} else {
 			r.RaftLog.appendEntries(m.Entries[i:])
@@ -777,6 +790,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
 }
 
+func (r *Raft) updateLastCommunicateTs(id uint64) {
+	r.Prs[id].lastCommunicateTs = time.Now().UnixNano() / 1e6
+}
+
 // handleAppendResponse handle AppendEntry response
 func (r *Raft) handleAppendResponse(m pb.Message) {
 	// 1. reject, retry
@@ -790,14 +807,15 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 
 	// 2. accept, update index
+	r.updateLastCommunicateTs(m.From)
 	if m.Index > r.Prs[m.From].Match {
 		id := m.From
 		r.Prs[id].Next = m.Index + 1
 		r.Prs[id].Match = m.Index
-	}
 
-	// 3.boost commitIndex
-	r.boostCommitIndexAndBroadCast()
+		// 3.boost commitIndex
+		r.boostCommitIndexAndBroadCast()
+	}
 
 	// 4.if leadTransferee == from, and log is matched
 	if r.leadTransferee == m.From {
@@ -826,6 +844,9 @@ func (r *Raft) boostCommitIndexAndBroadCast() {
 		}
 	}
 	if maxCommitIndex > r.RaftLog.committed {
+		if maxCommitIndex == 9 {
+			log.Infof("Boost up commitIndex from {%d} to {%d}", r.RaftLog.committed, maxCommitIndex)
+		}
 		r.RaftLog.committed = maxCommitIndex
 		// Broadcast to followers to boost commitIndex
 		r.broadcast()
@@ -887,7 +908,6 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 		r.sendTimeoutNowRequest(targetId, r.Term)
 	} else {
 		// Append log to follower, wait catch up
-		r.leaderTransferElapsed = 0
 		r.sendAppend(targetId)
 	}
 }
@@ -930,7 +950,6 @@ func (r *Raft) removeNode(id uint64) {
 func (r *Raft) resetNode() {
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
-	r.leaderTransferElapsed = 0
 	r.leadTransferee = None
 	r.votes = make(map[uint64]bool)
 	r.Vote = None
