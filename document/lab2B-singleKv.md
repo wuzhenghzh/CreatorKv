@@ -28,9 +28,30 @@ region1 的三个分布分布在 nodeA, nodeB, nodeD, 上, 这三个副本由一
 
 ![image-20211201144741591](https://gitee.com/zisuu/mypicture/raw/master/image-20211201144741591.png)
 
+## 实现 multi-raft 的核心点
 
+(1) 数据何如分片:
 
-## tinykv
+- 基于 range 分片, 好处是对于范围请求比较友好, 也有利于底层的 rocksdb 这种基于 lsm tree 的存储
+
+(2) 分片中的数据越来越大，需要分裂产生更多的分片，组成更多 Raft-Group:
+
+- 用一个定时器,  split_checker, 定时的检测每个 region 的大小是否超过了限制, 如果超过了, 需要和 pd 上报 split 的请求, 让 pd 生成全局唯一的 regionid, 并进行 region split 的流程
+
+(3) 分片的调度，让负载在系统中更平均（分片副本的迁移，补全，Leader 切换等等）。
+
+- 需要一个 pd , 全局元数据兼顾调度中心
+- region 和 store 定时的上报 regionHeartbeat 和 storeHeartbeat
+- regionHeartbeat 包括 region 的基本信息, 比如 大小, 成员等等
+- storeHeartbeat 包括 store 中 region 的数量, 总存储的大小
+- pd 中需要具备 region_balancer 和 leader_balancer
+  - region_balancer 负责平衡每个 store 上region 的数量, 保证存储尽量的均衡
+  - leader_balancer 负责平衡每个 store 上 leader 的数量, 保证读写负载尽量均衡
+  - 具体的做法很简单: 因为  pd 蕴含了全局的元数据, 比如 leader_balancer , 那就对每个 store 按照 leader nums 进行从大到小的排序, 然后在 leader 数量多的 store 上挑选处一个 leader, 将其 leader transfer 给其某个 follower(当然, 这个 follower 必须在别的 store )上
+  - 而对于 region_balancer , 也可以依靠成员变更来实现
+- 总的来说, 调度的核心依赖于 raft 的 leader transfer 和 conf node change
+
+## tinykv的 multi raft 架构
 
 认识了 multi-raft 后, 那么 tinykv 中是怎么体现 multi-raft 的呢? 如下图所示:
 

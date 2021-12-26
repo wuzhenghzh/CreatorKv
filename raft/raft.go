@@ -795,11 +795,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
-	//log.Warnf("Peer {%d} handle append from leader {%d}, index:{%d}, term:{%d}", r.id, m.From, m.Index, m.LogTerm)
-	//if len(m.Entries) == 0 && m.Commit == r.RaftLog.committed && m.Commit >= 9 {
-	//	log.Warnf("Peer{%d} receive commit msg from leader {%d}, commitIndex:{%d}, localCommitted :{%d}", r.id, m.From, m.Commit, r.RaftLog.committed)
-	//}
-
 	// 3.handle log conflicts
 	for i, entry := range m.Entries {
 		index := entry.Index
@@ -812,6 +807,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				// delete from here
 				r.RaftLog.deleteEntriesFromIndex(index)
 				r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+				// update stableIndex
+				r.RaftLog.stabled = min(r.RaftLog.stabled, index-1)
 			}
 		} else {
 			r.RaftLog.appendEntries(m.Entries[i:])

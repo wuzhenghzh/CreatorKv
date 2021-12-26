@@ -133,7 +133,6 @@ func (l *RaftLog) deleteEntriesFromIndex(index uint64) {
 	lastLogIndex := l.LastIndex()
 	l.committed = min(l.committed, lastLogIndex)
 	l.applied = min(l.applied, lastLogIndex)
-	l.stabled = min(l.stabled, lastLogIndex)
 }
 
 // nextEnts returns all the committed but not applied entries

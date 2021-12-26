@@ -43,26 +43,36 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-func (d *peerMsgHandler) getProposal(index uint64, term uint64) (*proposal, error) {
+func (d *peerMsgHandler) findProposal(index uint64, term uint64) (*proposal, error) {
 	p := d.peer
 	for len(p.proposals) > 0 {
 		pr := p.proposals[0]
-		if pr.term > term && pr.index > index {
-			return nil, errors.New("The index and term are not match")
+		err := fmt.Sprintf("The pr at index {%d} and term {%d} not match, find index{%d}, term{%d}", index, term, pr.index, pr.term)
+		if pr.index > index && pr.term > term {
+			return nil, errors.New(err)
 		}
-		if pr.term == term {
-			if pr.index == index {
-				p.proposals = p.proposals[1:]
-				return pr, nil
-			} else {
-				p.proposals = p.proposals[1:]
-				NotifyStaleReq(term, pr.cb)
-			}
-		} else {
-			p.proposals = p.proposals[1:]
-			currentTerm := d.RaftGroup.Raft.Term
-			log.Errorf("The request pr is staled, peerId:{%d}, index:{%d}, term:{%d}, prIndex:{%d}, prTerm:{%d}, currentTerm:{%d}", d.PeerId(), index, term, pr.index, pr.term, currentTerm)
+
+		p.proposals = p.proposals[1:]
+		currentTerm := d.RaftGroup.Raft.Term
+		if pr.index == index && pr.term == term {
+			return pr, nil
+		}
+
+		if pr.index == index && pr.term != term {
 			NotifyStaleReq(currentTerm, pr.cb)
+			log.Errorf(err)
+			continue
+		}
+
+		if pr.index > index {
+			log.Errorf(err)
+			continue
+		}
+
+		if pr.index < index {
+			log.Errorf(err)
+			NotifyStaleReq(currentTerm, pr.cb)
+			continue
 		}
 	}
 	return nil, nil
@@ -151,7 +161,7 @@ func (d *peerMsgHandler) applyDataRequest(msg *raft_cmdpb.RaftCmdRequest, entry 
 	key := parseRequestKey(request)
 	if key != nil {
 		if err := util.CheckKeyInRegion(key, d.Region()); err != nil {
-			pr, _ := d.getProposal(entry.Index, entry.Term)
+			pr, _ := d.findProposal(entry.Index, entry.Term)
 			if pr != nil {
 				pr.cb.Done(ErrResp(err))
 			}
@@ -170,7 +180,7 @@ func (d *peerMsgHandler) applyDataRequest(msg *raft_cmdpb.RaftCmdRequest, entry 
 	}
 
 	// Get propose
-	pr, _ := d.getProposal(entry.Index, entry.Term)
+	pr, _ := d.findProposal(entry.Index, entry.Term)
 	if pr == nil {
 		return kvWB
 	}
@@ -262,16 +272,16 @@ func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb
 	// 0.Check region epoch and whether key was in region
 	err := util.CheckKeyInRegion(req.SplitKey, d.Region())
 	if err != nil {
-		p, _ := d.getProposal(entry.Index, entry.Term)
-		if p != nil {
-			p.cb.Done(ErrResp(err))
+		pr, _ := d.findProposal(entry.Index, entry.Term)
+		if pr != nil {
+			pr.cb.Done(ErrResp(err))
 		}
 		return
 	}
 	if err = util.CheckRegionEpoch(msg, d.Region(), true); err != nil {
-		p, _ := d.getProposal(entry.Index, entry.Term)
-		if p != nil {
-			p.cb.Done(ErrResp(err))
+		pr, _ := d.findProposal(entry.Index, entry.Term)
+		if pr != nil {
+			pr.cb.Done(ErrResp(err))
 		}
 		return
 	}
@@ -303,7 +313,7 @@ func (d *peerMsgHandler) handleSplitRegion(entry *eraftpb.Entry, msg *raft_cmdpb
 	d.ApproximateSize = new(uint64)
 
 	// 5. Send response
-	pr, _ := d.getProposal(entry.Index, entry.Term)
+	pr, _ := d.findProposal(entry.Index, entry.Term)
 	if pr != nil {
 		resp := newCmdResp()
 		resp.AdminResponse = &raft_cmdpb.AdminResponse{
@@ -344,7 +354,7 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 	// Check region epoch
 	err := util.CheckRegionEpoch(msg, d.Region(), true)
 	if err != nil {
-		pr, _ := d.getProposal(entry.Index, entry.Term)
+		pr, _ := d.findProposal(entry.Index, entry.Term)
 		if pr != nil {
 			pr.cb.Done(ErrResp(err))
 		}
@@ -393,7 +403,7 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 	})
 
 	// Send response
-	pr, _ := d.getProposal(entry.Index, entry.Term)
+	pr, _ := d.findProposal(entry.Index, entry.Term)
 	if pr != nil {
 		resp := newCmdResp()
 		resp.AdminResponse = &raft_cmdpb.AdminResponse{
