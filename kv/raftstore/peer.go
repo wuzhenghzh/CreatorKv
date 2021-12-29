@@ -61,6 +61,9 @@ type proposal struct {
 	index uint64
 	term  uint64
 	cb    *message.Callback
+
+	saveTimed    int64
+	timeoutLimit int64
 }
 
 type peer struct {
@@ -137,6 +140,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	if err != nil {
 		return nil, err
 	}
+
 	p := &peer{
 		Meta:                  meta,
 		regionId:              region.GetId(),
@@ -147,6 +151,18 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		Tag:                   tag,
 		ticker:                newTicker(region.GetId(), cfg),
 	}
+
+	// Register leader shutdown hook, clear all proposals
+	raftGroup.Raft.RegisterLeaderShutdownHook(func() {
+		//term := raftGroup.Raft.Term
+		//log.Errorf("Leader {%d} shutdown, try to clear proposals", term)
+		//if p.proposals != nil {
+		//	for _, proposal := range p.proposals {
+		//		NotifyStaleReq(term, proposal.cb)
+		//		println("clear proposal:{%d}. {%d}", proposal.term, proposal.index)
+		//	}
+		//}
+	})
 
 	// If this region has only one peer and I am the one, campaign directly.
 	if len(region.GetPeers()) == 1 && region.GetPeers()[0].GetStoreId() == storeId {

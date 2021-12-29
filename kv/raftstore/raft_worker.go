@@ -1,9 +1,10 @@
 package raftstore
 
 import (
-	"sync"
-
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/log"
+	"sync"
 )
 
 // raftWorker is responsible for run raft commands and apply raft logs.
@@ -33,10 +34,12 @@ func newRaftWorker(ctx *GlobalContext, pm *router) *raftWorker {
 func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	var msgs []message.Msg
+	//checkCloseTimer := time.NewTimer(5 * time.Second)
 	for {
 		msgs = msgs[:0]
 		select {
 		case <-closeCh:
+			log.Warnf("Store{%d} receive shutdown request", rw.ctx.store.Id)
 			return
 		case msg := <-rw.raftCh:
 			msgs = append(msgs, msg)
@@ -46,7 +49,19 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			msgs = append(msgs, <-rw.raftCh)
 		}
 		peerStateMap := make(map[uint64]*peerState)
-		for _, msg := range msgs {
+		for i, msg := range msgs {
+			// Check whether the chan is closed
+			if util.IsChanClosed(closeCh) {
+				log.Errorf("The closeCh is closed in raftWorker, just return directly, pass all msgs")
+				for j := i; j < len(msgs); j++ {
+					if msg.Type == message.MsgTypeRaftCmd {
+						raftCMD := msg.Data.(*message.MsgRaftCmd)
+						NotifyReqRegionRemoved(msg.RegionID, raftCMD.Callback)
+					}
+				}
+				log.Errorf("Notify proposals done")
+				return
+			}
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
 			if peerState == nil {
 				continue
@@ -54,6 +69,10 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleMsg(msg)
 		}
 		for _, peerState := range peerStateMap {
+			if util.IsChanClosed(closeCh) {
+				log.Errorf("The closeCh is closed in raftWorker, just return directly, pass all msgs")
+				return
+			}
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleRaftReady()
 		}
 	}

@@ -316,18 +316,36 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 
 func (bs *Raftstore) shutDown() {
 	close(bs.closeCh)
-	bs.wg.Wait()
+	bs.waitCloseChShutdown(bs.wg)
+
 	bs.tickDriver.stop()
 	if bs.workers == nil {
 		return
 	}
+
 	workers := bs.workers
 	bs.workers = nil
 	workers.splitCheckWorker.Stop()
 	workers.regionWorker.Stop()
 	workers.raftLogGCWorker.Stop()
 	workers.schedulerWorker.Stop()
-	workers.wg.Wait()
+	bs.waitCloseChShutdown(workers.wg)
+}
+
+func (bs *Raftstore) waitCloseChShutdown(wg *sync.WaitGroup) {
+	timeout := time.Duration(50) * time.Second
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		done <- struct{}{}
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(timeout):
+		log.Errorf("Wait close ch timeout, directly return")
+		return
+	}
 }
 
 func CreateRaftstore(cfg *config.Config) (*RaftstoreRouter, *Raftstore) {

@@ -195,7 +195,7 @@ func (n *Node) startNode(engines *engine_util.Engines, trans Transport, snapMgr 
 }
 
 func (n *Node) stopNode(storeID uint64) {
-	log.Infof("stop raft store thread, storeID: %d", storeID)
+	log.Infof("try stop raft store thread, storeID: %d", storeID)
 	n.system.shutDown()
 }
 

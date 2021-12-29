@@ -171,6 +171,8 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	leaderShutdownHook func()
 }
 
 // newRaft return a raft peer with the given config
@@ -223,6 +225,10 @@ func newRaft(c *Config) *Raft {
 		raft.RaftLog.applied = c.Applied
 	}
 	return raft
+}
+
+func (r *Raft) RegisterLeaderShutdownHook(f func()) {
+	r.leaderShutdownHook = f
 }
 
 /***********************************  1.sending util function  *****************************************/
@@ -445,8 +451,10 @@ func (r *Raft) resetRandElectionTimeout() {
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
 	if term >= r.Term {
+		if r.State == StateLeader && r.leaderShutdownHook != nil {
+			r.leaderShutdownHook()
+		}
 		r.resetNode()
-
 		r.State = StateFollower
 		r.Term = term
 		r.Lead = lead
@@ -459,8 +467,10 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	// Become candidate means let term = term + 1 and vote for self
 	// And after election timeout, try to elect self become leader
+	if r.State == StateLeader && r.leaderShutdownHook != nil {
+		r.leaderShutdownHook()
+	}
 	r.resetNode()
-
 	r.State = StateCandidate
 	r.Term++
 	r.resetRandElectionTimeout()
@@ -630,9 +640,7 @@ func (r *Raft) stepLeader(m pb.Message) {
 	case pb.MessageType_MsgHeartbeatResponse:
 		{
 			r.updateLastCommunicateTs(m.From)
-			if r.RaftLog.LastIndex() > r.Prs[m.From].Next {
-				r.sendAppend(m.From)
-			}
+			r.sendAppend(m.From)
 		}
 	// no-op log
 	case pb.MessageType_MsgPropose:
