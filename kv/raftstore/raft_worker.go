@@ -52,14 +52,13 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		for i, msg := range msgs {
 			// Check whether the chan is closed
 			if util.IsChanClosed(closeCh) {
-				log.Errorf("The closeCh is closed in raftWorker, just return directly, pass all msgs")
+				log.Errorf("The closeCh is closed in raftWorker, just return directly, pass all msgs , nums:{%d}", pending-i)
 				for j := i; j < len(msgs); j++ {
 					if msg.Type == message.MsgTypeRaftCmd {
 						raftCMD := msg.Data.(*message.MsgRaftCmd)
 						NotifyReqRegionRemoved(msg.RegionID, raftCMD.Callback)
 					}
 				}
-				log.Errorf("Notify proposals done")
 				return
 			}
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
@@ -69,10 +68,6 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleMsg(msg)
 		}
 		for _, peerState := range peerStateMap {
-			if util.IsChanClosed(closeCh) {
-				log.Errorf("The closeCh is closed in raftWorker, just return directly, pass all msgs")
-				return
-			}
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleRaftReady()
 		}
 	}

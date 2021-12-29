@@ -110,6 +110,8 @@ type Progress struct {
 
 	// the last communication ts
 	lastCommunicateTs int64
+
+	isSendingSnapshot bool
 }
 
 type Raft struct {

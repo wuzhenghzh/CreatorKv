@@ -154,14 +154,14 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 
 	// Register leader shutdown hook, clear all proposals
 	raftGroup.Raft.RegisterLeaderShutdownHook(func() {
-		//term := raftGroup.Raft.Term
-		//log.Errorf("Leader {%d} shutdown, try to clear proposals", term)
-		//if p.proposals != nil {
-		//	for _, proposal := range p.proposals {
-		//		NotifyStaleReq(term, proposal.cb)
-		//		println("clear proposal:{%d}. {%d}", proposal.term, proposal.index)
-		//	}
-		//}
+		id, term := p.regionId, raftGroup.Raft.Term
+		if p.proposals != nil {
+			for _, proposal := range p.proposals {
+				NotifyStaleReq(term, proposal.cb)
+			}
+			log.Errorf("Region {%d} with term {%d} shutdown, clear all, proposals, size:{%d}", id, term, len(p.proposals))
+			p.proposals = make([]*proposal, 0)
+		}
 	})
 
 	// If this region has only one peer and I am the one, campaign directly.
