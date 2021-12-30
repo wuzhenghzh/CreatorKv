@@ -60,17 +60,14 @@ func (d *peerMsgHandler) findProposal(index uint64, term uint64) (*proposal, err
 
 		if pr.index == index && pr.term != term {
 			NotifyStaleReq(currentTerm, pr.cb)
-			log.Errorf(err)
 			continue
 		}
 
 		if pr.index > index {
-			log.Errorf(err)
 			continue
 		}
 
 		if pr.index < index {
-			log.Errorf(err)
 			NotifyStaleReq(currentTerm, pr.cb)
 			continue
 		}

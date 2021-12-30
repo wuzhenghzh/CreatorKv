@@ -159,7 +159,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 			for _, proposal := range p.proposals {
 				NotifyStaleReq(term, proposal.cb)
 			}
-			log.Errorf("Region {%d} with term {%d} shutdown, clear all, proposals, size:{%d}", id, term, len(p.proposals))
+			log.Warnf("Region {%d} with term {%d} shutdown, clear all, proposals, size:{%d}", id, term, len(p.proposals))
 			p.proposals = make([]*proposal, 0)
 		}
 	})

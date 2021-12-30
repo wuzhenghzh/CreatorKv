@@ -110,8 +110,6 @@ type Progress struct {
 
 	// the last communication ts
 	lastCommunicateTs int64
-
-	isSendingSnapshot bool
 }
 
 type Raft struct {
@@ -290,6 +288,11 @@ func (r *Raft) sendAppendResponse(to uint64, term uint64, lastIndex uint64, reje
 // sendSnapshot send snapshot to the given peer
 func (r *Raft) sendSnapshot(to uint64) bool {
 	// Your Code Here (2A).
+	// If the follower is inActive, maybe there exists a partition between leader and follower
+	if !r.checkFollowerActive(to, curMs()) {
+		//log.Warnf("Leader {%d} ignore to send snapshot to {%d}, the follower is not active", r.id, to)
+		return false
+	}
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		return false
@@ -432,8 +435,7 @@ func (r *Raft) tickLeaderLeaseCheck() {
 				aliveCount++
 				continue
 			}
-			interval := curTs - r.Prs[to].lastCommunicateTs
-			if interval < r.leaderLeaseTimeout {
+			if r.checkFollowerActive(to, curTs) {
 				aliveCount++
 			}
 		}
@@ -442,6 +444,12 @@ func (r *Raft) tickLeaderLeaseCheck() {
 			r.becomeFollower(r.Term, None)
 		}
 	}
+}
+
+// Return true if the node is active
+func (r *Raft) checkFollowerActive(to uint64, curTs int64) bool {
+	interval := curTs - r.Prs[to].lastCommunicateTs
+	return interval < r.leaderLeaseTimeout
 }
 
 /***********************************  3.becomexxx function  *****************************************/
@@ -1003,4 +1011,8 @@ func (r *Raft) resetNode() {
 
 func (r *Raft) sendMessage(m pb.Message) {
 	r.msgs = append(r.msgs, m)
+}
+
+func (r *Raft) IsTransferLeader() bool {
+	return r.leadTransferee != None
 }
