@@ -384,6 +384,7 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 			return
 		}
 		if peerId == d.Meta.Id {
+
 			d.destroyPeer()
 			return
 		}

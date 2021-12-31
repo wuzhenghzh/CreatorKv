@@ -34,6 +34,13 @@ const (
 	StateLeader
 )
 
+type SnapShotStateType uint64
+
+const (
+	StateNormal SnapShotStateType = iota
+	StateSending
+)
+
 var stmap = [...]string{
 	"StateFollower",
 	"StateCandidate",
@@ -110,6 +117,12 @@ type Progress struct {
 
 	// the last communication ts
 	lastCommunicateTs int64
+
+	snapshotState SnapShotStateType
+	// Ticks since it sending snapshot
+	snapTick int
+	// Pending snapshot index
+	snapPendingIndex uint64
 }
 
 type Raft struct {
@@ -154,7 +167,7 @@ type Raft struct {
 	// Number of ticks since it reached last electionTimeout or received a
 	// valid message from current leader when it is a follower.
 	electionElapsed int
-
+	// Ticks since it reached last leaderLeaseTimeout when it is leader
 	leaderAliveElapsed int
 
 	// leadTransferee is id of the leader transfer target when its value is not zero.
@@ -290,9 +303,12 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	// Your Code Here (2A).
 	// If the follower is inActive, maybe there exists a partition between leader and follower
 	if !r.checkFollowerActive(to, curMs()) {
-		//log.Warnf("Leader {%d} ignore to send snapshot to {%d}, the follower is not active", r.id, to)
 		return false
 	}
+	if r.Prs[to].snapshotState == StateSending {
+		return false
+	}
+
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	log.Warnf("leader {%d} try send snapshot to follower{%d}", r.id, to)
 	if err != nil {
@@ -306,6 +322,9 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 		Snapshot: &snapshot,
 	}
 	r.sendMessage(snapshotRequest)
+	r.Prs[to].snapshotState = StateSending
+	r.Prs[to].snapTick = 0
+	r.Prs[to].snapPendingIndex = snapshot.Metadata.Index
 	r.Prs[to].Next = snapshot.Metadata.Index + 1
 	return true
 }
@@ -389,6 +408,7 @@ func (r *Raft) tick() {
 	case StateLeader:
 		r.tickHeartbeat()
 		r.tickLeaderLeaseCheck()
+		r.tickSnapshot()
 	case StateFollower:
 		r.tickElection()
 	case StateCandidate:
@@ -421,6 +441,18 @@ func (r *Raft) tickHeartbeat() {
 			From:    r.id,
 			Term:    r.Term,
 		})
+	}
+}
+
+func (r *Raft) tickSnapshot() {
+	for to := range r.Prs {
+		if to != r.id {
+			r.Prs[to].snapTick++
+			// Maybe the progress of sending snapshot is failed, revert back to statenormal
+			if r.Prs[to].snapTick > r.electionTimeout {
+				r.Prs[to].snapshotState = StateNormal
+			}
+		}
 	}
 }
 
@@ -505,6 +537,8 @@ func (r *Raft) becomeLeader() {
 		} else {
 			r.Prs[peer].Next = lastIndex + 1
 			r.Prs[peer].Match = 0
+			r.Prs[peer].snapshotState = StateNormal
+			r.Prs[peer].snapTick = 0
 			r.updateLastCommunicateTs(peer)
 		}
 	}
@@ -844,14 +878,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.sendAppendResponse(m.From, r.Term, r.RaftLog.LastIndex(), false)
 }
 
-func curMs() int64 {
-	return time.Now().UnixNano() / 1e6
-}
-
-func (r *Raft) updateLastCommunicateTs(id uint64) {
-	r.Prs[id].lastCommunicateTs = curMs()
-}
-
 // handleAppendResponse handle AppendEntry response
 func (r *Raft) handleAppendResponse(m pb.Message) {
 	// 1. reject, retry
@@ -868,8 +894,14 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	r.updateLastCommunicateTs(m.From)
 	if m.Index > r.Prs[m.From].Match {
 		id := m.From
-		r.Prs[id].Next = m.Index + 1
-		r.Prs[id].Match = m.Index
+		pr := r.Prs[id]
+		pr.Next = m.Index + 1
+		pr.Match = m.Index
+		if pr.snapshotState == StateSending && pr.snapPendingIndex >= pr.Match {
+			pr.snapPendingIndex = 0
+			pr.snapTick = 0
+			pr.snapshotState = StateNormal
+		}
 
 		// 3.boost commitIndex
 		r.boostCommitIndexAndBroadCast()
@@ -984,8 +1016,10 @@ func (r *Raft) addNode(id uint64) {
 	_, existed := r.Prs[id]
 	if !existed {
 		r.Prs[id] = &Progress{
-			Match: 0,
-			Next:  1,
+			Match:         0,
+			Next:          1,
+			snapshotState: StateNormal,
+			snapTick:      0,
 		}
 	}
 }
@@ -1016,4 +1050,12 @@ func (r *Raft) sendMessage(m pb.Message) {
 
 func (r *Raft) IsTransferLeader() bool {
 	return r.leadTransferee != None
+}
+
+func curMs() int64 {
+	return time.Now().UnixNano() / 1e6
+}
+
+func (r *Raft) updateLastCommunicateTs(id uint64) {
+	r.Prs[id].lastCommunicateTs = curMs()
 }
