@@ -294,6 +294,7 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 		return false
 	}
 	snapshot, err := r.RaftLog.storage.Snapshot()
+	log.Warnf("leader {%d} try send snapshot to follower{%d}", r.id, to)
 	if err != nil {
 		return false
 	}

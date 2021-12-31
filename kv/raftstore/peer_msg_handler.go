@@ -419,6 +419,9 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 
 func (d *peerMsgHandler) createNewPeerAndStart(newRegion *metapb.Region) *peer {
 	peer, _ := createPeer(d.ctx.store.Id, d.ctx.cfg, d.ctx.schedulerTaskSender, d.ctx.engine, newRegion)
+	for _, p := range newRegion.Peers {
+		peer.insertPeerCache(p)
+	}
 	d.ctx.router.register(peer)
 	d.ctx.router.send(newRegion.Id, message.Msg{
 		Type: message.MsgTypeStart,
