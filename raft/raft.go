@@ -34,13 +34,6 @@ const (
 	StateLeader
 )
 
-type SnapShotStateType uint64
-
-const (
-	StateNormal SnapShotStateType = iota
-	StateSending
-)
-
 var stmap = [...]string{
 	"StateFollower",
 	"StateCandidate",
@@ -117,12 +110,6 @@ type Progress struct {
 
 	// the last communication ts
 	lastCommunicateTs int64
-
-	snapshotState SnapShotStateType
-	// Ticks since it sending snapshot
-	snapTick int
-	// Pending snapshot index
-	snapPendingIndex uint64
 }
 
 type Raft struct {
@@ -184,8 +171,6 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
-
-	leaderShutdownHook func()
 }
 
 // newRaft return a raft peer with the given config
@@ -238,10 +223,6 @@ func newRaft(c *Config) *Raft {
 		raft.RaftLog.applied = c.Applied
 	}
 	return raft
-}
-
-func (r *Raft) RegisterLeaderShutdownHook(f func()) {
-	r.leaderShutdownHook = f
 }
 
 /***********************************  1.sending util function  *****************************************/
@@ -310,6 +291,7 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	//}
 
 	snapshot, err := r.RaftLog.storage.Snapshot()
+	//	log.Infof("leader {%d} try send snap to :{%d}", r.id, to)
 	if err != nil {
 		return false
 	}
@@ -321,9 +303,6 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 		Snapshot: &snapshot,
 	}
 	r.sendMessage(snapshotRequest)
-	r.Prs[to].snapshotState = StateSending
-	r.Prs[to].snapTick = 0
-	r.Prs[to].snapPendingIndex = snapshot.Metadata.Index
 	r.Prs[to].Next = snapshot.Metadata.Index + 1
 	return true
 }
@@ -407,13 +386,10 @@ func (r *Raft) tick() {
 	case StateLeader:
 		r.tickHeartbeat()
 		r.tickLeaderLeaseCheck()
-		//r.tickSnapshot()
 	case StateFollower:
 		r.tickElection()
 	case StateCandidate:
-		{
-			r.tickElection()
-		}
+		r.tickElection()
 	}
 }
 
@@ -440,18 +416,6 @@ func (r *Raft) tickHeartbeat() {
 			From:    r.id,
 			Term:    r.Term,
 		})
-	}
-}
-
-func (r *Raft) tickSnapshot() {
-	for to := range r.Prs {
-		if to != r.id {
-			r.Prs[to].snapTick++
-			// Maybe the progress of sending snapshot is failed, revert back to statenormal
-			if r.Prs[to].snapTick > r.electionTimeout {
-				r.Prs[to].snapshotState = StateNormal
-			}
-		}
 	}
 }
 
@@ -493,9 +457,6 @@ func (r *Raft) resetRandElectionTimeout() {
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
 	if term >= r.Term {
-		if r.State == StateLeader && r.leaderShutdownHook != nil {
-			r.leaderShutdownHook()
-		}
 		r.resetNode()
 		r.State = StateFollower
 		r.Term = term
@@ -509,9 +470,6 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	// Become candidate means let term = term + 1 and vote for self
 	// And after election timeout, try to elect self become leader
-	if r.State == StateLeader && r.leaderShutdownHook != nil {
-		r.leaderShutdownHook()
-	}
 	r.resetNode()
 	r.State = StateCandidate
 	r.Term++
@@ -536,8 +494,6 @@ func (r *Raft) becomeLeader() {
 		} else {
 			r.Prs[peer].Next = lastIndex + 1
 			r.Prs[peer].Match = 0
-			r.Prs[peer].snapshotState = StateNormal
-			r.Prs[peer].snapTick = 0
 			r.updateLastCommunicateTs(peer)
 		}
 	}
@@ -896,11 +852,6 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		pr := r.Prs[id]
 		pr.Next = m.Index + 1
 		pr.Match = m.Index
-		if pr.snapshotState == StateSending && pr.snapPendingIndex >= pr.Match {
-			pr.snapPendingIndex = 0
-			pr.snapTick = 0
-			pr.snapshotState = StateNormal
-		}
 
 		// 3.boost commitIndex
 		r.boostCommitIndexAndBroadCast()
@@ -1015,10 +966,8 @@ func (r *Raft) addNode(id uint64) {
 	_, existed := r.Prs[id]
 	if !existed {
 		r.Prs[id] = &Progress{
-			Match:         0,
-			Next:          1,
-			snapshotState: StateNormal,
-			snapTick:      0,
+			Match: 0,
+			Next:  1,
 		}
 	}
 }
