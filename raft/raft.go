@@ -305,9 +305,9 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	if !r.checkFollowerActive(to, curMs()) {
 		return false
 	}
-	if r.Prs[to].snapshotState == StateSending {
-		return false
-	}
+	//if r.Prs[to].snapshotState == StateSending {
+	//	return false
+	//}
 
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
@@ -407,7 +407,7 @@ func (r *Raft) tick() {
 	case StateLeader:
 		r.tickHeartbeat()
 		r.tickLeaderLeaseCheck()
-		r.tickSnapshot()
+		//r.tickSnapshot()
 	case StateFollower:
 		r.tickElection()
 	case StateCandidate:

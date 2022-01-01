@@ -34,6 +34,11 @@ type SchedulerStoreHeartbeatTask struct {
 	Path   string
 }
 
+type SchedulerRegionCheckTask struct {
+	Ch       chan *metapb.Region
+	RegionId uint64
+}
+
 type SchedulerTaskHandler struct {
 	storeID         uint64
 	SchedulerClient scheduler_client.Client
@@ -56,6 +61,8 @@ func (r *SchedulerTaskHandler) Handle(t worker.Task) {
 		r.onHeartbeat(t.(*SchedulerRegionHeartbeatTask))
 	case *SchedulerStoreHeartbeatTask:
 		r.onStoreHeartbeat(t.(*SchedulerStoreHeartbeatTask))
+	case *SchedulerRegionCheckTask:
+		r.checkRegion(t.(*SchedulerRegionCheckTask))
 	default:
 		log.Error("unsupported worker.Task: %+v", t)
 	}
@@ -63,6 +70,15 @@ func (r *SchedulerTaskHandler) Handle(t worker.Task) {
 
 func (r *SchedulerTaskHandler) Start() {
 	r.SchedulerClient.SetRegionHeartbeatResponseHandler(r.storeID, r.onRegionHeartbeatResponse)
+}
+
+func (r *SchedulerTaskHandler) checkRegion(req *SchedulerRegionCheckTask) {
+	region, _, err := r.SchedulerClient.GetRegionByID(context.TODO(), req.RegionId)
+	if err != nil {
+		log.Errorf(err.Error())
+		return
+	}
+	req.Ch <- region
 }
 
 func (r *SchedulerTaskHandler) onRegionHeartbeatResponse(resp *schedulerpb.RegionHeartbeatResponse) {
@@ -113,6 +129,9 @@ func (r *SchedulerTaskHandler) onHeartbeat(t *SchedulerRegionHeartbeatTask) {
 		Leader:          t.Peer,
 		PendingPeers:    t.PendingPeers,
 		ApproximateSize: uint64(size),
+	}
+	if len(req.Region.Peers) == 1 {
+		log.Warnf("Try send heart beat to scheduler:{%s}", req.Region.String())
 	}
 	r.SchedulerClient.RegionHeartbeat(req)
 }

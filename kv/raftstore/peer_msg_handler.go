@@ -383,11 +383,6 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 		if !existed {
 			return
 		}
-		if peerId == d.Meta.Id {
-
-			d.destroyPeer()
-			return
-		}
 		d.ctx.storeMeta.changeRegionPeer(d.Region(), peer, false)
 		meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
 		d.removePeerCache(peerId)
@@ -399,6 +394,14 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 		NodeId:     peerId,
 		Context:    nil,
 	})
+
+	if d.IsLeader() {
+		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
+	}
+
+	if peerId == d.Meta.Id {
+		d.destroyPeer()
+	}
 
 	// Send response
 	pr, _ := d.findProposal(entry.Index, entry.Term)
@@ -413,9 +416,6 @@ func (d *peerMsgHandler) handleChangePeerRequest(entry *eraftpb.Entry, msg *raft
 		pr.cb.Done(resp)
 	}
 
-	if d.IsLeader() {
-		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
-	}
 }
 
 func (d *peerMsgHandler) createNewPeerAndStart(newRegion *metapb.Region) *peer {
@@ -616,6 +616,11 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		{
 			req := adminRequest.ChangePeer
+			if req.GetChangeType() == eraftpb.ConfChangeType_RemoveNode {
+				if len(d.RaftGroup.Raft.Prs) == 2 && d.RaftGroup.Raft.Lead == d.RaftGroup.Raft.GetId() && req.Peer.Id == d.RaftGroup.Raft.GetId() {
+					log.Errorf("Try to remove leader {%d}, but size is two", d.RaftGroup.Raft.GetId())
+				}
+			}
 			data, err := msg.Marshal()
 			if err != nil {
 				log.Errorf("Error when encode msg: %s", err.Error())
@@ -1046,6 +1051,32 @@ func (d *peerMsgHandler) onSchedulerHeartbeatTick() {
 	d.ticker.schedule(PeerTickSchedulerHeartbeat)
 
 	if !d.IsLeader() {
+		// Maybe there exist a partition, check whether the regionInfo is changed
+		if len(d.RaftGroup.Raft.Prs) == 2 {
+			log.Warnf("Peers:{%d}, May be there exist a partition, region:{%s}", d.RaftGroup.Raft.GetId(), d.Region().String())
+			ch := make(chan *metapb.Region)
+			req := &runner.SchedulerRegionCheckTask{
+				Ch:       ch,
+				RegionId: d.regionId,
+			}
+			d.ctx.schedulerTaskSender <- req
+			regionInfo := <-ch
+			log.Warnf("Get region info from pd, region:{%s}", regionInfo.String())
+			localPeer := d.RaftGroup.Raft.GetId()
+			if len(regionInfo.Peers) == 1 && regionInfo.Peers[0].Id == localPeer {
+				for p := range d.RaftGroup.Raft.Prs {
+					if p != localPeer && p == d.RaftGroup.Raft.Lead {
+						// Apply conf change to raft module
+						log.Warnf("Try reomve peer :{%d}", p)
+						d.RaftGroup.ApplyConfChange(eraftpb.ConfChange{
+							ChangeType: eraftpb.ConfChangeType_RemoveNode,
+							NodeId:     p,
+							Context:    nil,
+						})
+					}
+				}
+			}
+		}
 		return
 	}
 	d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
