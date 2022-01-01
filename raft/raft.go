@@ -310,7 +310,6 @@ func (r *Raft) sendSnapshot(to uint64) bool {
 	}
 
 	snapshot, err := r.RaftLog.storage.Snapshot()
-	log.Warnf("leader {%d} try send snapshot to follower{%d}", r.id, to)
 	if err != nil {
 		return false
 	}
@@ -1058,4 +1057,8 @@ func curMs() int64 {
 
 func (r *Raft) updateLastCommunicateTs(id uint64) {
 	r.Prs[id].lastCommunicateTs = curMs()
+}
+
+func (r *Raft) GetId() uint64 {
+	return r.id
 }

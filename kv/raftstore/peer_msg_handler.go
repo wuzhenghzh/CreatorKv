@@ -615,7 +615,7 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		}
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		{
-			changePeerRequest := adminRequest.ChangePeer
+			req := adminRequest.ChangePeer
 			data, err := msg.Marshal()
 			if err != nil {
 				log.Errorf("Error when encode msg: %s", err.Error())
@@ -625,8 +625,8 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 
 			// Propose conf change
 			err = d.RaftGroup.ProposeConfChange(eraftpb.ConfChange{
-				ChangeType: changePeerRequest.ChangeType,
-				NodeId:     changePeerRequest.Peer.Id,
+				ChangeType: req.ChangeType,
+				NodeId:     req.Peer.Id,
 				Context:    data,
 			})
 			if err != nil {
